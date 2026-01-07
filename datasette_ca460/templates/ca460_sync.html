@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}CA Form 460 Sync - {{ database }}{% endblock %}
+
+{% block content %}
+<h1>CA Form 460 Sync</h1>
+<p>Sync California Form 460 campaign finance documents from DocumentCloud to <strong>{{ database }}</strong>.</p>
+
+{% if message %}
+<div class="message-{{ message_type }}">
+  {{ message }}
+</div>
+{% endif %}
+
+{% if sync_job_id %}
+<div class="progress" id="progress-container">
+  <h2>Sync Progress</h2>
+  <div id="job-status" class="job-status"></div>
+  <div id="events-container" class="events-container"></div>
+</div>
+
+<script>
+const syncJobId = '{{ sync_job_id }}';
+const database = '{{ database }}';
+let pollInterval;
+let lastEventCount = 0;
+
+async function pollEvents() {
+  try {
+    const response = await fetch(`/${database}/-/ca460/${syncJobId}/events`);
+    const data = await response.json();
+
+    // Update job status
+    const statusDiv = document.getElementById('job-status');
+    const status = data.job.status;
+    statusDiv.textContent = `Status: ${status}`;
+    statusDiv.className = `job-status status-${status}`;
+
+    // Update events
+    const eventsContainer = document.getElementById('events-container');
+    if (data.events.length > lastEventCount) {
+      // Only append new events
+      for (let i = lastEventCount; i < data.events.length; i++) {
+        const event = data.events[i];
+        const eventDiv = document.createElement('div');
+        eventDiv.className = `event event-${event.type}`;
+        eventDiv.textContent = event.message;
+        eventsContainer.appendChild(eventDiv);
+      }
+      lastEventCount = data.events.length;
+      // Auto-scroll to bottom
+      eventsContainer.scrollTop = eventsContainer.scrollHeight;
+    }
+
+    // Stop polling if completed or failed
+    if (status === 'completed' || status === 'failed') {
+      clearInterval(pollInterval);
+      if (status === 'failed' && data.job.error) {
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'event event-error';
+        errorDiv.textContent = `Error: ${data.job.error}`;
+        eventsContainer.appendChild(errorDiv);
+      }
+    }
+  } catch (error) {
+    console.error('Error polling events:', error);
+  }
+}
+
+// Start polling immediately and then every second
+pollEvents();
+pollInterval = setInterval(pollEvents, 1000);
+</script>
+{% endif %}
+
+<form method="post" action="{{ url }}">
+      <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+
+  <div class="form-group">
+    <label for="project_id">DocumentCloud Project ID:</label>
+    <input type="text" id="project_id" name="project_id" required
+           placeholder="e.g., 123456"
+           value="{{ project_id or '' }}">
+  </div>
+
+  <div class="form-group">
+    <label for="page_type_model">Page Type Model:</label>
+    <select id="page_type_model" name="page_type_model">
+      {% for model in available_models %}
+      <option value="{{ model }}">{{ model }}</option>
+      {% endfor %}
+    </select>
+    <small>Model to use for page type prediction</small>
+  </div>
+
+  <div class="form-group">
+    <label for="parser_model">Parser Model:</label>
+    <select id="parser_model" name="parser_model">
+      {% for model in available_models %}
+      <option value="{{ model }}">{{ model }}</option>
+      {% endfor %}
+    </select>
+    <small>Model to use for parsing pages</small>
+  </div>
+
+  <button type="submit">Sync Project</button>
+</form>
+
+<style>
+.form-group {
+  margin-bottom: 1em;
+}
+
+.form-group label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 0.25em;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  max-width: 400px;
+  padding: 0.5em;
+  font-size: 1em;
+}
+
+.form-group small {
+  display: block;
+  color: #666;
+  margin-top: 0.25em;
+}
+
+button {
+  padding: 0.75em 1.5em;
+  font-size: 1em;
+  background: #0066cc;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #0052a3;
+}
+
+.message-success {
+  padding: 1em;
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+  color: #155724;
+  border-radius: 4px;
+  margin-bottom: 1em;
+}
+
+.message-error {
+  padding: 1em;
+  background: #f8d7da;
+  border: 1px solid #f5c6cb;
+  color: #721c24;
+  border-radius: 4px;
+  margin-bottom: 1em;
+}
+
+.progress {
+  margin-top: 2em;
+  padding: 1em;
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+}
+
+.progress pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.job-status {
+  padding: 0.5em 1em;
+  margin-bottom: 1em;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.status-running {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.status-completed {
+  background: #d4edda;
+  color: #155724;
+}
+
+.status-failed {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.events-container {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 0.5em;
+  background: white;
+}
+
+.event {
+  padding: 0.25em 0;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+.event-info {
+  color: #333;
+}
+
+.event-warning {
+  color: #856404;
+}
+
+.event-error {
+  color: #721c24;
+  font-weight: bold;
+}
+
+.event-success {
+  color: #155724;
+  font-weight: bold;
+}
+</style>
+{% endblock %}
