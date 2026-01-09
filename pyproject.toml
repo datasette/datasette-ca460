@@ -17,7 +17,9 @@ dependencies = [
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
     "llm-gemini>=0.28.2",
-    "datasette-llm-accountant @ file:///Users/alex/work/simonw/datasette-llm-accountant",
+    "datasette-llm-accountant @ https://github.com/datasette/datasette-llm-accountant/archive/refs/heads/configurable-pricing.zip",
+    "datasette-plugin-router @ https://github.com/datasette/datasette-plugin-router/archive/refs/heads/main.zip",
+    "extract-ca460==0.0.3",
 ]
 
 [dependency-groups]
@@ -47,3 +49,5 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.setuptools.package-data]
 datasette_ca460 = ["static/*", "templates/*"]
 
+[tool.setuptools.packages.find]
+exclude = ["frontend"]
