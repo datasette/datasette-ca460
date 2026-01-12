@@ -11,6 +11,9 @@ dev *options:
     --clear -- \
     just sample {{options}}
 
+dev-frontend:
+  npm run dev --prefix frontend -- --port 5177
+
 frontend-build:
   npm run build --prefix frontend
 
