@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import DevBadge from './DevBadge.svelte';
+  import { getDatabaseFromUrl } from './utils';
 
-  const database = 'tmp';
+  const database = getDatabaseFromUrl();
 
   interface SyncEvent {
     type: string;

@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
   import DevBadge from './DevBadge.svelte';
   import { documents as fetchDocuments } from './api';
+  import { getDatabaseFromUrl } from './utils';
 
-  const database = 'tmp';
+  const database = getDatabaseFromUrl();
 
   interface Document {
     id: number;
