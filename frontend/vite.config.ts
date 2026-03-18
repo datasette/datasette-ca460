@@ -21,7 +21,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: "src/index_view.ts",
-        sync: "src/sync_view.ts",
         document: "src/document_view.ts",
         page_detail: "src/page_detail_view.ts",
       },

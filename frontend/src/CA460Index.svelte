@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import DevBadge from './DevBadge.svelte';
+  import UploadDialog from './UploadDialog.svelte';
   import { documents as fetchDocuments } from './api';
   import { loadPageData } from './pageData';
 
@@ -21,18 +22,15 @@
 
   let documents: Document[] = $state([]);
   let loading = $state(true);
+  let uploadOpen = $state(false);
 
-  onMount(() => {
-    loadDocuments();
-  });
+  onMount(() => { loadDocuments(); });
 
   async function loadDocuments() {
     loading = true;
     try {
       const { data } = await fetchDocuments(database);
-      if (data) {
-        documents = data.documents;
-      }
+      if (data) documents = data.documents;
     } catch (error) {
       console.error('Error loading documents:', error);
     } finally {
@@ -62,18 +60,20 @@
 </script>
 
 <main>
-  <h1>CA Form 460 <DevBadge /></h1>
-  <p>California Form 460 campaign finance documents in <strong>{database}</strong>.</p>
-
-  <nav class="ca460-nav">
-    <a href="/{database}/-/ca460/sync" class="nav-link">Sync / Upload</a>
-  </nav>
+  <div class="page-header">
+    <div>
+      <h1>CA Form 460 <DevBadge /></h1>
+      <p>Campaign finance documents in <strong>{database}</strong></p>
+    </div>
+    <button class="btn-upload" onclick={() => uploadOpen = true}>Upload PDF</button>
+  </div>
 
   {#if loading}
     <div class="loading">Loading documents...</div>
   {:else if documents.length === 0}
     <div class="empty">
-      <p>No documents yet. <a href="/{database}/-/ca460/sync">Upload a PDF or sync from DocumentCloud</a> to get started.</p>
+      <p>No documents yet.</p>
+      <button class="btn-upload" onclick={() => uploadOpen = true}>Upload a PDF</button>
     </div>
   {:else}
     <table class="documents-table">
@@ -122,128 +122,53 @@
   {/if}
 </main>
 
+<UploadDialog {database} bind:open={uploadOpen} onclose={() => uploadOpen = false} />
+
 <style>
-  .ca460-nav {
-    margin: 1em 0;
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1em;
   }
+  .page-header h1 { margin: 0 0 0.25em; }
+  .page-header p { margin: 0; color: #64748b; }
 
-  .nav-link {
-    display: inline-block;
-    padding: 0.5em 1em;
+  .btn-upload {
+    padding: 0.6em 1.2em;
     background: #0066cc;
-    color: white !important;
-    text-decoration: none;
-    border-radius: 4px;
-  }
-
-  .nav-link:hover {
-    background: #0052a3;
-    color: white !important;
-  }
-
-  .loading {
-    text-align: center;
-    padding: 2em;
-    color: #666;
-  }
-
-  .empty {
-    padding: 2em;
-    text-align: center;
-    background: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 4px;
-  }
-
-  .empty a {
-    color: #0066cc;
-  }
-
-  .documents-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 1em;
-  }
-
-  .documents-table th,
-  .documents-table td {
-    padding: 0.6em 0.8em;
-    text-align: left;
-    border-bottom: 1px solid #dee2e6;
-  }
-
-  .documents-table th {
-    background: #f8f9fa;
-    font-weight: 600;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
     font-size: 0.9em;
-    color: #555;
-  }
-
-  .documents-table tbody tr:hover {
-    background: #f8f9fa;
-  }
-
-  .num {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .doc-link {
-    color: #0066cc;
-    text-decoration: none;
     font-weight: 500;
+    white-space: nowrap;
   }
+  .btn-upload:hover { background: #0052a3; }
 
-  .doc-link:hover {
-    text-decoration: underline;
-  }
+  .loading { text-align: center; padding: 2em; color: #666; }
+  .empty { padding: 3em; text-align: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+  .empty p { margin: 0 0 1em; color: #64748b; }
 
-  .doc-link.secondary {
-    color: #64748b;
-    font-weight: normal;
-    font-size: 0.9em;
-  }
+  .documents-table { width: 100%; border-collapse: collapse; }
+  .documents-table th, .documents-table td { padding: 0.6em 0.8em; text-align: left; border-bottom: 1px solid #e2e8f0; }
+  .documents-table th { background: #f8fafc; font-weight: 600; font-size: 0.9em; color: #475569; }
+  .documents-table tbody tr:hover { background: #f8fafc; }
 
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .doc-link { color: #0066cc; text-decoration: none; font-weight: 500; }
+  .doc-link:hover { text-decoration: underline; }
+  .doc-link.secondary { color: #64748b; font-weight: normal; font-size: 0.9em; }
   .nowrap { white-space: nowrap; }
   .muted { color: #94a3b8; }
 
-  .source-badge {
-    display: inline-block;
-    padding: 0.15em 0.5em;
-    border-radius: 3px;
-    font-size: 0.8em;
-  }
+  .source-badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 3px; font-size: 0.8em; }
+  .source-upload { background: #e0f2fe; color: #0369a1; }
+  .source-documentcloud { background: #f0e6ff; color: #4a1d8e; }
 
-  .source-upload {
-    background: #e7f3ff;
-    color: #004085;
-  }
-
-  .source-documentcloud {
-    background: #f0e6ff;
-    color: #4a1d8e;
-  }
-
-  .status-badge {
-    display: inline-block;
-    padding: 0.2em 0.6em;
-    border-radius: 3px;
-    font-size: 0.85em;
-    font-weight: 500;
-  }
-
-  .status-complete {
-    background: #d4edda;
-    color: #155724;
-  }
-
-  .status-in-progress {
-    background: #fff3cd;
-    color: #856404;
-  }
-
-  .status-pending {
-    background: #e9ecef;
-    color: #6c757d;
-  }
+  .status-badge { display: inline-block; padding: 0.2em 0.6em; border-radius: 3px; font-size: 0.85em; font-weight: 500; }
+  .status-complete { background: #d4edda; color: #155724; }
+  .status-in-progress { background: #fff3cd; color: #856404; }
+  .status-pending { background: #e9ecef; color: #6c757d; }
 </style>

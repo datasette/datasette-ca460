@@ -36,24 +36,6 @@ async def ca460_index_view(request, datasette, database: str):
         await _render_vite_entry(datasette, "src/index_view.ts", {"database": database})
     )
 
-@router.GET(r"^/(?P<database>[^/]+)/-/ca460/sync$")
-@check_permission()
-async def ca460_sync_view(request, datasette, database: str):
-    """Handle the CA 460 sync page with Svelte UI."""
-
-    # Check database exists
-    try:
-        _db = datasette.get_database(database)
-    except KeyError:
-        return Response.html(
-            f"<h1>Database not found</h1><p>Database '{database}' does not exist.</p>",
-            status=404
-        )
-
-    return Response.html(
-        await _render_vite_entry(datasette, "src/sync_view.ts", {"database": database})
-    )
-
 
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/document/(?P<document_id>\d+)$")
 @check_permission()
