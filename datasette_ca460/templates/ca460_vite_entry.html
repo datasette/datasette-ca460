@@ -2,4 +2,7 @@
 
 {% block extra_head %}
 {{ datasette_ca460_vite_entry(entry_name) | safe }}
+{% if page_data %}
+<script type="application/json" id="pageData">{{ page_data | tojson }}</script>
+{% endif %}
 {% endblock %}

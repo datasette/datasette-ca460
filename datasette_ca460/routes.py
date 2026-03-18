@@ -10,11 +10,12 @@ from .router import router, check_permission
 import asyncio
 import uuid
 
-async def _render_vite_entry(datasette, entrypoint: str) -> str:
+async def _render_vite_entry(datasette, entrypoint: str, page_data: Optional[dict] = None) -> str:
     return await datasette.render_template(
         "ca460_vite_entry.html",
         {
             "entry_name": entrypoint,
+            "page_data": page_data,
         }
     )
 
@@ -32,9 +33,9 @@ async def ca460_index_view(request, datasette, database: str):
         )
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/index_view.ts")
+        await _render_vite_entry(datasette, "src/index_view.ts", {"database": database})
     )
-    
+
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/sync$")
 @check_permission()
 async def ca460_sync_view(request, datasette, database: str):
@@ -50,7 +51,7 @@ async def ca460_sync_view(request, datasette, database: str):
         )
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/sync_view.ts")
+        await _render_vite_entry(datasette, "src/sync_view.ts", {"database": database})
     )
 
 
@@ -66,7 +67,7 @@ async def ca460_document_view(request, datasette, database: str, document_id: st
         )
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/document_view.ts")
+        await _render_vite_entry(datasette, "src/document_view.ts", {"database": database, "document_id": int(document_id)})
     )
 
 
@@ -79,7 +80,7 @@ async def ca460_page_detail_view(request, datasette, database: str, document_id:
         return Response.html("Database not found", status=404)
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/page_detail_view.ts")
+        await _render_vite_entry(datasette, "src/page_detail_view.ts", {"database": database, "document_id": int(document_id), "page_number": int(page_number)})
     )
 
 

@@ -3,11 +3,12 @@
   import DevBadge from './DevBadge.svelte';
   import CopyTableButton from './CopyTableButton.svelte';
   import { documentParsed } from './api';
-  import { getDatabaseFromUrl, getDocumentIdFromUrl, getPageNumberFromUrl } from './utils';
+  import { loadPageData } from './pageData';
 
-  const database = getDatabaseFromUrl();
-  const documentId = getDocumentIdFromUrl();
-  const pageNumber = getPageNumberFromUrl();
+  const pageData = loadPageData<{ database: string; document_id: number; page_number: number }>();
+  const database = pageData.database;
+  const documentId = String(pageData.document_id);
+  const pageNumber = pageData.page_number;
 
   interface ParsedPage {
     page_number: number;

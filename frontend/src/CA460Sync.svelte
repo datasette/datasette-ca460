@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import DevBadge from './DevBadge.svelte';
-  import { getDatabaseFromUrl } from './utils';
+  import { loadPageData } from './pageData';
   import { models, sync, syncEvents, uploadPdf, processDocument } from './api';
 
-  const database = getDatabaseFromUrl();
+  const { database } = loadPageData<{ database: string }>();
 
   interface SyncEvent {
     type: string;

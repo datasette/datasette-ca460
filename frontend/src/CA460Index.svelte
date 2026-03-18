@@ -2,9 +2,9 @@
   import { onMount } from 'svelte';
   import DevBadge from './DevBadge.svelte';
   import { documents as fetchDocuments } from './api';
-  import { getDatabaseFromUrl } from './utils';
+  import { loadPageData } from './pageData';
 
-  const database = getDatabaseFromUrl();
+  const { database } = loadPageData<{ database: string }>();
 
   interface Document {
     id: number;
