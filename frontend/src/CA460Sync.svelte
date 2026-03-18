@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import DevBadge from './DevBadge.svelte';
   import { getDatabaseFromUrl } from './utils';
+  import { models, sync, syncEvents } from './api';
 
   const database = getDatabaseFromUrl();
 
@@ -51,9 +52,17 @@
   async function loadModels() {
     loadingModels = true;
     try {
-      const response = await fetch(`/${database}/-/ca460/api/models`);
-      const data = await response.json();
-      availableModels = data.models || [];
+      const { data, error, response } = await models(database);
+      if (error || !response.ok) {
+        console.error('Error loading models:', error);
+        message = 'Failed to load available models';
+        messageType = 'error';
+        return;
+      }
+      // Note: The API schema doesn't define the response body properly, 
+      // so we need to access the raw response data
+      const responseData = data as any;
+      availableModels = responseData.models || [];
       if (availableModels.length > 0) {
         pageTypeModel = availableModels[0];
         parserModel = availableModels[0];
@@ -88,22 +97,14 @@
     messageType = '';
 
     try {
-      const response = await fetch(`/${database}/-/ca460/api/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          project_id: projectIdNum,
-          page_type_model: pageTypeModel,
-          parser_model: parserModel,
-        }),
+      const { data, error } = await sync(database, {
+        project_id: projectIdNum,
+        page_type_model: pageTypeModel,
+        parser_model: parserModel,
       });
 
-      const data = await response.json();
-
-      if (data.error) {
-        message = data.error;
+      if (error) {
+        message = error || 'Failed to start sync job';
         messageType = 'error';
         return;
       }
@@ -139,14 +140,18 @@
     if (!syncJobId) return;
 
     try {
-      const response = await fetch(`/${database}/-/ca460/sync/${syncJobId}/events`);
-      const data = await response.json();
+      const { data, error, response } = await syncEvents(database, syncJobId);
+      if (error || !response.ok) {
+        console.error('Error polling events:', error);
+        return;
+      }
 
-      jobStatus = data.job;
-      events = data.events;
+      const responseData = data as any;
+      jobStatus = responseData.job;
+      events = responseData.events;
 
       // Stop polling if completed or failed
-      if (data.job.status === 'completed' || data.job.status === 'failed') {
+      if (responseData.job.status === 'completed' || responseData.job.status === 'failed') {
         if (pollInterval) {
           clearInterval(pollInterval);
           pollInterval = null;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import DevBadge from './DevBadge.svelte';
-  import { documents as fetchDocuments } from './api';
+  import { documents as fetchDocuments, documentParsed } from './api';
   import { getDatabaseFromUrl } from './utils';
 
   const database = getDatabaseFromUrl();
@@ -69,19 +69,24 @@
     currentDiffIndex = {};
 
     try {
-      const response = await fetch(`/${database}/-/ca460/api/document/${documentId}/parsed`);
-      const data = await response.json();
-
-      if (data.error) {
-        console.error(data.error);
+      const { data, error, response } = await documentParsed(database, documentId);
+      if (error || !response.ok) {
+        console.error('Error loading document:', error);
         documentData = null;
         return;
       }
 
-      documentData = data;
+      const responseData = data as any;
+      if (responseData.error) {
+        console.error(responseData.error);
+        documentData = null;
+        return;
+      }
+
+      documentData = responseData;
 
       // Initialize diff tracking for each model
-      const modelNames = Object.keys(data.models);
+      const modelNames = Object.keys(responseData.models);
       for (const modelName of modelNames) {
         diffElements[modelName] = [];
         currentDiffIndex[modelName] = -1;

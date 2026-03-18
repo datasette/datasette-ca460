@@ -18,14 +18,17 @@ dependencies = [
     "pydantic>=2.0.0",
     "llm-gemini>=0.28.2",
     "datasette-llm-accountant @ https://github.com/datasette/datasette-llm-accountant/archive/refs/heads/configurable-pricing.zip",
-    "datasette-plugin-router @ https://github.com/datasette/datasette-plugin-router/archive/refs/heads/main.zip",
+    #"datasette-plugin-router @ https://github.com/datasette/datasette-plugin-router/archive/refs/heads/main.zip",
+    "datasette-plugin-router @ https://github.com/datasette/datasette-plugin-router/archive/3f62758f4b35402dafd1308dcbcbba1c885b0f92.zip",
+    "datasette-vite>=0.0.1a2",
     "extract-ca460==0.0.3",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
-    "pytest-asyncio"
+    "pytest-asyncio",
+    "ruff>=0.15.0",
 ]
 
 [build-system]

@@ -239,14 +239,36 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Project Id */
+                        project_id: number;
+                        /** Page Type Model */
+                        page_type_model: string;
+                        /** Parser Model */
+                        parser_model: string;
+                    };
+                };
+            };
             responses: {
                 /** @description OK */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            /** Sync Job Id */
+                            sync_job_id: string;
+                            /** Project Id */
+                            project_id: number;
+                            /** Page Type Model */
+                            page_type_model: string;
+                            /** Parser Model */
+                            parser_model: string;
+                        };
+                    };
                 };
             };
         };

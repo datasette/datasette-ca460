@@ -4,8 +4,13 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 // https://vite.dev/config/
 export default defineConfig({
   server: {
-    cors: {
-      origin: ["http://localhost:8007", "http://127.0.0.1:8007"],
+    port: 5177,
+    strictPort: true,
+    cors: true,
+    hmr: {
+      host: "localhost",
+      port: 5177,
+      protocol: "ws",
     },
   },
   plugins: [svelte()],
@@ -13,14 +18,11 @@ export default defineConfig({
     manifest: "manifest.json",
     outDir: "../datasette_ca460",
     assetsDir: "static/gen",
-    //emptyOutDir: true,
-    
     rollupOptions: {
       input: {
         index: "src/index_view.ts",
         sync: "src/sync_view.ts",
       },
     },
-  
   },
 });

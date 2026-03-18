@@ -1,17 +1,16 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Annotated
 from datasette_llm_accountant import LlmWrapper
 from datasette import Response
-from datasette_plugin_router import Router
+from datasette_plugin_router import Body
 from pydantic import BaseModel
 import json
 from .sync import run_sync_in_background
+from .router import router, check_permission
 import asyncio
 import uuid
 
-router = Router()
-
-async def render_vite_entry(datasette, entrypoint: str) -> str:
+async def _render_vite_entry(datasette, entrypoint: str) -> str:
     return await datasette.render_template(
         "ca460_vite_entry.html",
         {
@@ -20,6 +19,7 @@ async def render_vite_entry(datasette, entrypoint: str) -> str:
     )
 
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460$")
+@check_permission()
 async def ca460_index_view(request, datasette, database: str):
 
     # Check database exists
@@ -32,10 +32,11 @@ async def ca460_index_view(request, datasette, database: str):
         )
 
     return Response.html(
-        await render_vite_entry(datasette, "src/index_view.ts")
+        await _render_vite_entry(datasette, "src/index_view.ts")
     )
     
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/sync$")
+@check_permission()
 async def ca460_sync_view(request, datasette, database: str):
     """Handle the CA 460 sync page with Svelte UI."""
 
@@ -49,12 +50,12 @@ async def ca460_sync_view(request, datasette, database: str):
         )
 
     return Response.html(
-        await render_vite_entry(datasette, "src/sync_view.ts")
+        await _render_vite_entry(datasette, "src/sync_view.ts")
     )
 
 
-# TODO permissions check
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/models$")
+@check_permission()
 async def ca460_api_models(request, datasette):
     """API endpoint to get available LLM models."""
     database_name = request.url_vars["database"]
@@ -79,8 +80,8 @@ class DocumentListItem(BaseModel):
 class DocumentListResponse(BaseModel):
     documents: list[DocumentListItem]
 
-# TODO permissions check
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/documents$", output=DocumentListResponse)
+@check_permission()
 async def ca460_api_documents(request, datasette):
     """API endpoint to get list of documents with parsed data."""
     database_name = request.url_vars["database"]
@@ -132,6 +133,7 @@ async def ca460_api_documents(request, datasette):
 
 
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/document/(?P<document_id>\d+)/parsed$")
+@check_permission()
 async def ca460_api_document_parsed(request, datasette, database: str, document_id: str):
     """API endpoint to get all parsed data for a document, grouped by model."""
     try:
@@ -208,6 +210,7 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
 
 
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/sync/(?P<sync_job_id>[^/]+)/events$")
+@check_permission()
 async def ca460_events_view(request, datasette):
     """API endpoint to get sync events for a job."""
     database_name = request.url_vars["database"]
@@ -270,37 +273,24 @@ async def ca460_events_view(request, datasette):
 
 SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
 
-@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/sync$")
-async def ca460_api_sync(request, datasette):
+class SyncParams(BaseModel):
+    project_id: int
+    page_type_model: str
+    parser_model: str
+class SyncOutput(BaseModel):
+    sync_job_id: str
+    project_id: int
+    page_type_model: str
+    parser_model: str
+
+@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/sync$", output=SyncOutput)
+@check_permission()
+async def ca460_api_sync(request, datasette, database: str, params: Annotated[SyncParams, Body()]):
     """API endpoint to start a sync job."""
-    database_name = request.url_vars["database"]
-
-    if request.method != "POST":
-        return Response.json({"error": "Method not allowed"}, status=405)
-
     try:
-        db = datasette.get_database(database_name)
+        db = datasette.get_database(database)
     except KeyError:
         return Response.json({"error": "Database not found"}, status=404)
-
-    # Parse JSON body
-    try:
-        body = await request.post_body()
-        data = json.loads(body)
-    except Exception:
-        return Response.json({"error": "Invalid JSON body"}, status=400)
-
-    project_id = data.get("project_id")
-    page_type_model = data.get("page_type_model", "llama-server")
-    parser_model = data.get("parser_model", "gemini-3-flash-preview")
-
-    if not project_id:
-        return Response.json({"error": "Please provide a DocumentCloud project ID"}, status=400)
-
-    try:
-        project_id = int(project_id)
-    except ValueError:
-        return Response.json({"error": "Project ID must be a number"}, status=400)
 
     # Initialize schema first
     def init_schema(conn):
@@ -314,7 +304,7 @@ async def ca460_api_sync(request, datasette):
     def _create_job(conn):
         conn.execute(
             "INSERT INTO sync_jobs (id, project_id, page_type_model, parser_model) VALUES (?, ?, ?, ?)",
-            (sync_job_id, project_id, page_type_model, parser_model)
+            (sync_job_id, params.project_id, params.page_type_model, params.parser_model)
         )
         conn.commit()
 
@@ -324,18 +314,18 @@ async def ca460_api_sync(request, datasette):
     asyncio.create_task(
         run_sync_in_background(
             datasette,
-            database_name,
+            database,
             sync_job_id,
-            project_id,
-            page_type_model,
-            parser_model
+            params.project_id,
+            params.page_type_model,
+            params.parser_model
         )
     )
 
-    return Response.json({
-        "sync_job_id": sync_job_id,
-        "project_id": project_id,
-        "page_type_model": page_type_model,
-        "parser_model": parser_model,
-    })
+    return Response.json(SyncOutput(
+        sync_job_id=sync_job_id,
+        project_id=params.project_id,
+        page_type_model=params.page_type_model,
+        parser_model=params.parser_model
+    ).model_dump())
 
