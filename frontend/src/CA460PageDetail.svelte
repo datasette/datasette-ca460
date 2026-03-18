@@ -9,6 +9,7 @@
   const database = pageData.database;
   const documentId = String(pageData.document_id);
   const pageNumber = pageData.page_number;
+  const highlightField = new URLSearchParams(window.location.search).get('hl');
 
   interface ParsedPage {
     page_number: number;
@@ -63,6 +64,13 @@
       documentData = d;
       const modelNames = Object.keys(d.models);
       if (modelNames.length > 0) selectedModel = modelNames[0];
+
+      // Scroll to highlighted field after render
+      if (highlightField) {
+        requestAnimationFrame(() => {
+          document.getElementById('hl-target')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      }
     } catch (e) { documentData = null; }
     finally { loading = false; }
   }
@@ -206,7 +214,7 @@
           {#if getMetaFields(parsedData.parsed_data || {}).length > 0}
             <div class="fields-card">
               {#each getMetaFields(parsedData.parsed_data || {}) as [key, value]}
-                <div class="field-row">
+                <div class="field-row" class:field-highlight={key === highlightField} id={key === highlightField ? 'hl-target' : undefined}>
                   <span class="field-label">{formatFieldName(key)}</span>
                   <span class="field-value" class:currency={isCurrencyField(key)}>{colDisplayValue(key, value)}</span>
                 </div>
@@ -305,6 +313,7 @@
   .field-row { display: flex; justify-content: space-between; padding: 0.6em 1em; border-bottom: 1px solid #f1f5f9; gap: 1em; }
   .field-row:last-child { border-bottom: none; }
   .field-row:nth-child(even) { background: #fafbfc; }
+  .field-highlight { background: #fef3c7 !important; border-left: 3px solid #f59e0b; padding-left: calc(1em - 3px); }
   .field-label { color: #64748b; font-size: 0.85em; flex-shrink: 0; }
   .field-value { font-size: 0.85em; font-weight: 500; text-align: right; word-break: break-word; }
   .field-value.currency { font-variant-numeric: tabular-nums; font-family: monospace; }

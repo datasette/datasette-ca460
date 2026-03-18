@@ -176,6 +176,17 @@
     return types.sort((a, b) => (TYPE_ORDER.indexOf(a) === -1 ? 999 : TYPE_ORDER.indexOf(a)) - (TYPE_ORDER.indexOf(b) === -1 ? 999 : TYPE_ORDER.indexOf(b)));
   }
 
+  const PAGE_SIZE = 20;
+  let tablePageMap: Record<string, number> = $state({});
+
+  function tablePage(key: string): number { return tablePageMap[key] || 0; }
+  function setTablePage(key: string, p: number) { tablePageMap[key] = p; }
+  function totalTablePages(totalRows: number): number { return Math.ceil(totalRows / PAGE_SIZE); }
+  function paginatedRows<T>(rows: T[], key: string): T[] {
+    const p = tablePage(key);
+    return rows.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE);
+  }
+
   function getStatusClass(s: string) { return s === 'running' ? 'status-running' : s === 'completed' ? 'status-completed' : s === 'failed' ? 'status-failed' : ''; }
   function getEventClass(t: string) { return t === 'warning' ? 'event-warning' : t === 'error' ? 'event-error' : t === 'success' ? 'event-success' : 'event-info'; }
 
@@ -197,9 +208,12 @@
   }
 
   interface SummaryStats {
+    page_number: number;
+    beginning_cash: number;
     total_receipts: number;
     total_expenditures: number;
     ending_cash: number;
+    cash_change: number;
   }
 
   function summaryStats(): SummaryStats | null {
@@ -207,15 +221,23 @@
     const summary = pages.find(p => p.page_type === 'summary-page');
     if (!summary) return null;
     const d = summary.parsed_data;
-    const receipts = d.line_5_total_contributions_received_col_a;
-    const expenditures = d.line_11_total_expenditures_col_a;
-    const cash = d.line_16_ending_cash_balance;
-    if (receipts == null && expenditures == null && cash == null) return null;
+    const beginning = Number(d.line_12_beginning_cash_balance) || 0;
+    const receipts = Number(d.line_5_total_contributions_received_col_a) || 0;
+    const expenditures = Number(d.line_11_total_expenditures_col_a) || 0;
+    const ending = Number(d.line_16_ending_cash_balance) || 0;
+    if (!beginning && !receipts && !expenditures && !ending) return null;
     return {
-      total_receipts: Number(receipts) || 0,
-      total_expenditures: Number(expenditures) || 0,
-      ending_cash: Number(cash) || 0,
+      page_number: summary.page_number,
+      beginning_cash: beginning,
+      total_receipts: receipts,
+      total_expenditures: expenditures,
+      ending_cash: ending,
+      cash_change: ending - beginning,
     };
+  }
+
+  function summaryFieldUrl(pageNum: number, field: string): string {
+    return pageUrl(pageNum) + `?hl=${encodeURIComponent(field)}`;
   }
 </script>
 
@@ -280,20 +302,31 @@
 
     <!-- Summary stats -->
     {#if summaryStats()}
-      <div class="stats-bar">
-        <div class="stat">
-          <span class="stat-label">Total Receipts</span>
-          <span class="stat-value positive">{formatCurrency(summaryStats()!.total_receipts)}</span>
+      {#each [summaryStats()!] as stats}
+        <div class="stats-cards">
+          <a class="stat-card" href={summaryFieldUrl(stats.page_number, 'line_12_beginning_cash_balance')}>
+            <span class="stat-label">Cash on Hand - Start</span>
+            <span class="stat-value">{formatCurrency(stats.beginning_cash)}</span>
+          </a>
+          <a class="stat-card" href={summaryFieldUrl(stats.page_number, 'line_5_total_contributions_received_col_a')}>
+            <span class="stat-label">Receipts</span>
+            <span class="stat-value positive">{formatCurrency(stats.total_receipts)}</span>
+          </a>
+          <a class="stat-card" href={summaryFieldUrl(stats.page_number, 'line_11_total_expenditures_col_a')}>
+            <span class="stat-label">Expenditures</span>
+            <span class="stat-value negative">{formatCurrency(stats.total_expenditures)}</span>
+          </a>
+          <a class="stat-card" href={summaryFieldUrl(stats.page_number, 'line_16_ending_cash_balance')}>
+            <span class="stat-label">Cash on Hand - End</span>
+            <span class="stat-value">{formatCurrency(stats.ending_cash)}</span>
+            {#if stats.cash_change !== 0}
+              <span class="stat-change" class:change-up={stats.cash_change > 0} class:change-down={stats.cash_change < 0}>
+                {stats.cash_change > 0 ? '\u2191' : '\u2193'} {formatCurrency(Math.abs(stats.cash_change))}
+              </span>
+            {/if}
+          </a>
         </div>
-        <div class="stat">
-          <span class="stat-label">Total Expenditures</span>
-          <span class="stat-value negative">{formatCurrency(summaryStats()!.total_expenditures)}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Cash on Hand</span>
-          <span class="stat-value">{formatCurrency(summaryStats()!.ending_cash)}</span>
-        </div>
-      </div>
+      {/each}
     {/if}
 
     <!-- Page Map -->
@@ -302,10 +335,9 @@
       <div class="page-grid">
         {#each documentData.pages as page}
           {@const pt = page.page_type}
-          <a href={pageUrl(page.page_number)} class="page-chip" style="border-left-color: {pageTypeColor(pt)}"
+          <a href={pageUrl(page.page_number)} class="page-chip" style="background: {pageTypeColor(pt)}20; border-color: {pageTypeColor(pt)}"
             title="Page {page.page_number}: {pt ? pageTypeLabel(pt) : 'Unclassified'}">
-            <span class="page-num">{page.page_number}</span>
-            <span class="page-type-label" style="color: {pageTypeColor(pt)}">{pt ? pageTypeLabel(pt) : '?'}</span>
+            {page.page_number}
           </a>
         {/each}
       </div>
@@ -335,6 +367,7 @@
             {#each [mergedLineItems(pages)] as rows}
               {#each [mergedColumns(rows)] as cols}
                 <div class="table-toolbar">
+                  <span class="table-info">{rows.length} items</span>
                   <CopyTableButton columns={cols} rows={rows.map(r => r.item)} />
                 </div>
                 <div class="table-wrapper">
@@ -348,7 +381,7 @@
                       </tr>
                     </thead>
                     <tbody>
-                      {#each rows as row}
+                      {#each paginatedRows(rows, pageType) as row}
                         <tr>
                           <td class="page-cell"><a href={pageUrl(row.page_number)} class="page-link">p.{row.page_number}</a></td>
                           {#each cols as col}
@@ -359,9 +392,13 @@
                     </tbody>
                   </table>
                 </div>
-                <div class="table-summary">
-                  {rows.length} items across {pages.length} page{pages.length !== 1 ? 's' : ''}
-                </div>
+                {#if rows.length > PAGE_SIZE}
+                  <div class="pagination">
+                    <button disabled={tablePage(pageType) === 0} onclick={() => setTablePage(pageType, tablePage(pageType) - 1)}>&larr; Prev</button>
+                    <span>{tablePage(pageType) * PAGE_SIZE + 1}&ndash;{Math.min((tablePage(pageType) + 1) * PAGE_SIZE, rows.length)} of {rows.length}</span>
+                    <button disabled={tablePage(pageType) >= totalTablePages(rows.length) - 1} onclick={() => setTablePage(pageType, tablePage(pageType) + 1)}>Next &rarr;</button>
+                  </div>
+                {/if}
               {/each}
             {/each}
           </section>
@@ -424,17 +461,26 @@
 
   .loading, .empty-state { text-align: center; padding: 4em; color: #94a3b8; font-size: 1.1em; }
 
-  /* Summary stats bar */
-  .stats-bar {
-    display: flex; gap: 1.5em; flex-wrap: wrap;
-    padding: 1em 1.25em; margin-bottom: 1.25em;
-    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+  /* Summary stat cards */
+  .stats-cards {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75em;
+    margin-bottom: 1.5em;
   }
-  .stat { display: flex; flex-direction: column; gap: 0.2em; }
-  .stat-label { font-size: 0.8em; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; }
-  .stat-value { font-size: 1.15em; font-weight: 700; font-variant-numeric: tabular-nums; font-family: monospace; color: #1e293b; }
-  .stat-value.positive { color: #059669; }
+  @media (max-width: 800px) { .stats-cards { grid-template-columns: repeat(2, 1fr); } }
+  .stat-card {
+    display: flex; flex-direction: column; gap: 0.25em;
+    padding: 1em 1.25em;
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+    text-decoration: none; color: inherit; transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .stat-card:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .stat-label { font-size: 0.8em; color: #64748b; }
+  .stat-value { font-size: 1.3em; font-weight: 700; font-variant-numeric: tabular-nums; font-family: monospace; color: #1e293b; }
+  .stat-value.positive { color: #0066cc; }
   .stat-value.negative { color: #dc2626; }
+  .stat-change { font-size: 0.8em; font-family: monospace; }
+  .change-up { color: #059669; }
+  .change-down { color: #dc2626; }
 
   /* Progress */
   .progress-bar { margin-bottom: 2em; padding: 1em 1.25em; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; }
@@ -466,17 +512,16 @@
   .section-count { font-size: 0.75em; color: #94a3b8; font-weight: normal; }
 
   /* Page grid */
-  .page-grid { display: flex; flex-wrap: wrap; gap: 0.5em; justify-content: center; }
+  .page-grid { display: flex; flex-wrap: wrap; gap: 0.35em; justify-content: center; }
   .page-chip {
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.15em;
-    width: 5.5em; height: 4em;
-    border: 1px solid #e2e8f0; border-left: 3px solid;
-    border-radius: 6px; background: white; text-decoration: none; color: inherit;
-    font-size: 0.82em; transition: box-shadow 0.1s;
+    display: flex; align-items: center; justify-content: center;
+    width: 2.4em; height: 2.4em;
+    border: 2px solid; border-radius: 6px;
+    text-decoration: none; color: #1e293b;
+    font-size: 0.85em; font-weight: 700;
+    transition: box-shadow 0.1s, transform 0.1s;
   }
-  .page-chip:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); background: #f8fafc; }
-  .page-num { font-weight: 700; font-size: 1.15em; color: #1e293b; }
-  .page-type-label { font-size: 0.68em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 4.5em; text-align: center; }
+  .page-chip:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); transform: scale(1.1); }
 
   .legend { display: flex; flex-wrap: wrap; gap: 1em; margin-top: 0.75em; font-size: 0.82em; color: #64748b; justify-content: center; }
   .legend-item { display: flex; align-items: center; gap: 0.35em; }
@@ -505,6 +550,17 @@
   .data-table tbody tr:hover { background: #f8fafc; }
   .data-table .num-col { text-align: right; font-variant-numeric: tabular-nums; font-family: monospace; }
   .page-cell { white-space: nowrap; }
-  .table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.5em; }
-  .table-summary { padding: 0.6em 1em; color: #64748b; font-size: 0.85em; }
+  .table-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 1em; margin-bottom: 0.5em; }
+  .table-info { color: #64748b; font-size: 0.85em; }
+
+  .pagination {
+    display: flex; align-items: center; justify-content: center; gap: 1em;
+    padding: 0.75em; font-size: 0.85em; color: #475569;
+  }
+  .pagination button {
+    padding: 0.3em 0.8em; background: #f1f5f9; border: 1px solid #d1d5db;
+    border-radius: 4px; cursor: pointer; font-size: 1em; color: #475569;
+  }
+  .pagination button:hover:not(:disabled) { background: #e2e8f0; }
+  .pagination button:disabled { opacity: 0.4; cursor: default; }
 </style>
