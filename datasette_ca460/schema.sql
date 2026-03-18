@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS sync_jobs(
     id TEXT PRIMARY KEY,
-    project_id INTEGER NOT NULL,
+    project_id INTEGER,
     page_type_model TEXT,
     parser_model TEXT,
     status TEXT DEFAULT 'running',
@@ -19,14 +19,24 @@ CREATE TABLE IF NOT EXISTS sync_events(
 
 CREATE TABLE IF NOT EXISTS documents(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL DEFAULT 'upload',
     page_count INTEGER,
     data JSONB
+);
+
+CREATE TABLE IF NOT EXISTS document_files(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER REFERENCES documents(id) UNIQUE,
+    filename TEXT,
+    content BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS pages(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id INTEGER REFERENCES documents(id),
-  page_number INTEGER
+  page_number INTEGER,
+  image BLOB
 );
 
 CREATE TABLE IF NOT EXISTS page_type_predictions(
@@ -126,7 +136,7 @@ create trigger if not exists trg_page_parsed_schedule_a_after_insert
     amount_per_election_code,
     amount_per_election
   )
-  select 
+  select
     new.id,
     value->>'date_received',
     value->>'full_name',

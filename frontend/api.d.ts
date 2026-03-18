@@ -74,6 +74,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/{database}/-/ca460/document/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    database: string;
+                    document_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/{database}/-/ca460/document/{document_id}/page/{page_number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    database: string;
+                    document_id: string;
+                    page_number: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/{database}/-/ca460/api/models": {
         parameters: {
             query?: never;
@@ -163,6 +236,43 @@ export interface paths {
                 path: {
                     database: string;
                     document_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/{database}/-/ca460/api/document/{document_id}/page/{page_number}/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    database: string;
+                    document_id: string;
+                    page_number: string;
                 };
                 cookie?: never;
             };
@@ -278,6 +388,112 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/{database}/-/ca460/api/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    database: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** File Data */
+                        file_data: string;
+                        /** Filename */
+                        filename: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Document Id */
+                            document_id: number;
+                            /** Page Count */
+                            page_count: number;
+                            /** Filename */
+                            filename: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/{database}/-/ca460/api/process": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    database: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Document Id */
+                        document_id: number;
+                        /** Page Type Model */
+                        page_type_model: string;
+                        /** Parser Model */
+                        parser_model: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Sync Job Id */
+                            sync_job_id: string;
+                            /** Document Id */
+                            document_id: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -286,10 +502,22 @@ export interface components {
         DocumentListItem: {
             /** Id */
             id: number;
+            /** Source */
+            source: string;
             /** Page Count */
             page_count: number;
             /** Title */
             title: string | null;
+            /** Filer Name */
+            filer_name: string | null;
+            /** Period From */
+            period_from: string | null;
+            /** Period Through */
+            period_through: string | null;
+            /** Pages Classified */
+            pages_classified: number;
+            /** Pages Parsed */
+            pages_parsed: number;
             /** Model Count */
             model_count: number;
         };
