@@ -6,6 +6,7 @@ import os
 # Import routes module to trigger route registration on the shared router
 from . import routes
 from .router import router, CA460_ACCESS_NAME
+from .cli import ca460_cli
 
 _ = routes
 
@@ -33,6 +34,11 @@ def register_actions(datasette):
             description="Can access CA 460 features",
         ),
     ]
+
+
+@hookimpl
+def register_commands(cli):
+    cli.add_command(ca460_cli)
 
 
 @hookimpl
