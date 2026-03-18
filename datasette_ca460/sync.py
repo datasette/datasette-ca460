@@ -364,12 +364,13 @@ async def sync_project(
             page_id = await sync_page_image(db, document, document_id, page_number)
 
             # Predict page type
-            await predict_page_type(
+            predicted = await predict_page_type(
                 datasette,
                 db,
                 page_id,
                 page_type_model
             )
+            await log_event(db, sync_job_id, "info", f"Document {document.id} page {page_number}: {predicted}")
 
         await log_event(db, sync_job_id, "info", f"Completed page type predictions for document {document.id}")
 
@@ -435,7 +436,8 @@ async def process_document(
     await log_event(db, sync_job_id, "info", f"Classifying {len(pages)} pages...")
 
     for page_id, page_number in pages:
-        await predict_page_type(datasette, db, page_id, page_type_model)
+        predicted = await predict_page_type(datasette, db, page_id, page_type_model)
+        await log_event(db, sync_job_id, "info", f"Page {page_number}: {predicted}")
 
     await log_event(db, sync_job_id, "info", "Classification complete, parsing pages...")
 
