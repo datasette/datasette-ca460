@@ -57,10 +57,10 @@ check:
 dev *flags:
     DATASETTE_SECRET=abc123 uv run \
       --with datasette-debug-gotham \
+      --with datasette-sidebar \
       datasette \
-        --root \
         -s permissions.ca460_access.id "*" \
-        -p 8007 \
+        -s permissions.datasette-sidebar-access.id "*" \
         tmp.db \
         --plugins-dir example \
         {{flags}}

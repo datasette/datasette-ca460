@@ -101,6 +101,7 @@
 
   // Helpers
   function pageUrl(pn: number) { return `/${database}/-/ca460/document/${documentId}/page/${pn}`; }
+  function imageUrl(pn: number) { return `/${database}/-/ca460/api/document/${documentId}/page/${pn}/image`; }
   function pdfUrl() { return `/${database}/-/ca460/api/document/${documentId}/pdf`; }
 
   function pageTypeLabel(pt: string): string { return pt.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
@@ -189,6 +190,50 @@
 
   function getStatusClass(s: string) { return s === 'running' ? 'status-running' : s === 'completed' ? 'status-completed' : s === 'failed' ? 'status-failed' : ''; }
   function getEventClass(t: string) { return t === 'warning' ? 'event-warning' : t === 'error' ? 'event-error' : t === 'success' ? 'event-success' : 'event-info'; }
+
+  // Thumbnail tooltip action
+  const thumbCache = new Map<number, string>();
+
+  function pageThumbTooltip(node: HTMLElement, pn: number) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tooltip = () => document.getElementById('page-thumb-tooltip')!;
+
+    function show() {
+      timer = setTimeout(async () => {
+        const tt = tooltip();
+        const rect = node.getBoundingClientRect();
+        tt.style.left = `${rect.left + rect.width / 2}px`;
+        tt.style.top = `${rect.top - 8}px`;
+
+        if (thumbCache.has(pn)) {
+          tt.innerHTML = `<img src="${thumbCache.get(pn)}" />`;
+        } else {
+          tt.innerHTML = '<span class="thumb-loading">Loading...</span>';
+          try {
+            const resp = await fetch(imageUrl(pn));
+            if (resp.ok) {
+              const blob = await resp.blob();
+              const url = URL.createObjectURL(blob);
+              thumbCache.set(pn, url);
+              tt.innerHTML = `<img src="${url}" />`;
+            } else { tt.innerHTML = ''; return; }
+          } catch { tt.innerHTML = ''; return; }
+        }
+        tt.classList.add('visible');
+      }, 100);
+    }
+
+    function hide() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      tooltip().classList.remove('visible');
+    }
+
+    node.addEventListener('mouseenter', show);
+    node.addEventListener('mouseleave', hide);
+    return {
+      destroy() { node.removeEventListener('mouseenter', show); node.removeEventListener('mouseleave', hide); hide(); }
+    };
+  }
 
   function friendlyDate(d: string): string {
     const date = new Date(d + 'T00:00:00');
@@ -336,7 +381,8 @@
         {#each documentData.pages as page}
           {@const pt = page.page_type}
           <a href={pageUrl(page.page_number)} class="page-chip" style="background: {pageTypeColor(pt)}20; border-color: {pageTypeColor(pt)}"
-            title="Page {page.page_number}: {pt ? pageTypeLabel(pt) : 'Unclassified'}">
+            title="Page {page.page_number}: {pt ? pageTypeLabel(pt) : 'Unclassified'}"
+            use:pageThumbTooltip={page.page_number}>
             {page.page_number}
           </a>
         {/each}
@@ -437,6 +483,7 @@
     {/if}
   {/if}
 </main>
+<div id="page-thumb-tooltip" class="thumb-tooltip"></div>
 
 <style>
   main { max-width: 100%; }
@@ -563,4 +610,15 @@
   }
   .pagination button:hover:not(:disabled) { background: #e2e8f0; }
   .pagination button:disabled { opacity: 0.4; cursor: default; }
+
+  /* Thumbnail tooltip */
+  :global(.thumb-tooltip) {
+    position: fixed; transform: translate(-50%, -100%);
+    pointer-events: none; z-index: 100; opacity: 0; transition: opacity 0.15s;
+    background: white; border: 1px solid #d1d5db; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15); padding: 4px; max-width: 200px;
+  }
+  :global(.thumb-tooltip.visible) { opacity: 1; }
+  :global(.thumb-tooltip img) { display: block; width: 100%; height: auto; border-radius: 4px; }
+  :global(.thumb-loading) { display: block; padding: 1em 1.5em; color: #94a3b8; font-size: 0.8em; }
 </style>

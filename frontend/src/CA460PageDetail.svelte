@@ -147,6 +147,64 @@
     for (const item of items) for (const k of Object.keys(item)) allKeys.add(k);
     return Array.from(allKeys);
   }
+
+  // Thumbnail tooltip action
+  const thumbCache = new Map<number, string>();
+
+  function pageThumbTooltip(node: HTMLElement, pn: number) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tooltip = () => document.getElementById('page-thumb-tooltip')!;
+
+    function show(e: MouseEvent) {
+      timer = setTimeout(async () => {
+        const tt = tooltip();
+        // Position
+        const rect = node.getBoundingClientRect();
+        tt.style.left = `${rect.left + rect.width / 2}px`;
+        tt.style.top = `${rect.top - 8}px`;
+
+        // Load or use cache
+        if (thumbCache.has(pn)) {
+          tt.innerHTML = `<img src="${thumbCache.get(pn)}" />`;
+        } else {
+          tt.innerHTML = '<span class="thumb-loading">Loading...</span>';
+          try {
+            const resp = await fetch(imageUrl(pn));
+            if (resp.ok) {
+              const blob = await resp.blob();
+              const url = URL.createObjectURL(blob);
+              thumbCache.set(pn, url);
+              tt.innerHTML = `<img src="${url}" />`;
+            } else {
+              tt.innerHTML = '';
+              return;
+            }
+          } catch {
+            tt.innerHTML = '';
+            return;
+          }
+        }
+        tt.classList.add('visible');
+      }, 100);
+    }
+
+    function hide() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      const tt = tooltip();
+      tt.classList.remove('visible');
+    }
+
+    node.addEventListener('mouseenter', show);
+    node.addEventListener('mouseleave', hide);
+
+    return {
+      destroy() {
+        node.removeEventListener('mouseenter', show);
+        node.removeEventListener('mouseleave', hide);
+        hide();
+      }
+    };
+  }
 </script>
 
 <main>
@@ -164,117 +222,117 @@
       <DevBadge />
     </nav>
 
-    <div class="page-nav-bar">
-      <div class="page-nav-left">
-        {#if pageNumber > 1}
-          <a href={pageUrl(pageNumber - 1)} class="btn-nav">&larr; Page {pageNumber - 1}</a>
-        {/if}
+    <!-- Page strip with prev/next -->
+    <div class="page-nav">
+      {#if pageNumber > 1}
+        <a href={pageUrl(pageNumber - 1)} class="btn-arrow" title="Previous page">&larr;</a>
+      {:else}
+        <span class="btn-arrow disabled">&larr;</span>
+      {/if}
+      <div class="page-strip">
+        {#each documentData.pages as p}
+          {@const pt = p.page_type}
+          <a
+            href={pageUrl(p.page_number)}
+            class="page-chip"
+            class:page-chip-active={p.page_number === pageNumber}
+            style="background: {pageTypeColor(pt)}{p.page_number === pageNumber ? '' : '20'}; border-color: {pageTypeColor(pt)};{p.page_number === pageNumber ? ' color: white;' : ''}"
+            use:pageThumbTooltip={p.page_number}
+          >
+            {p.page_number}
+          </a>
+        {/each}
       </div>
-
-      <h1>Page {pageNumber} of {pageCount()}</h1>
-
-      <div class="page-nav-right">
-        {#if pageNumber < pageCount()}
-          <a href={pageUrl(pageNumber + 1)} class="btn-nav">Page {pageNumber + 1} &rarr;</a>
-        {/if}
-      </div>
+      {#if pageNumber < pageCount()}
+        <a href={pageUrl(pageNumber + 1)} class="btn-arrow" title="Next page">&rarr;</a>
+      {:else}
+        <span class="btn-arrow disabled">&rarr;</span>
+      {/if}
+      {#if Object.keys(documentData.models).length > 1}
+        <div class="model-inline">
+          <select bind:value={selectedModel}>
+            {#each Object.keys(documentData.models) as model}
+              <option value={model}>{model}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
     </div>
+    <div id="page-thumb-tooltip" class="thumb-tooltip"></div>
 
-    {#if Object.keys(documentData.models).length > 1}
-      <div class="model-bar">
-        <label for="model-select">Model:</label>
-        <select id="model-select" bind:value={selectedModel}>
-          {#each Object.keys(documentData.models) as model}
-            <option value={model}>{model}</option>
-          {/each}
-        </select>
-      </div>
-    {/if}
-
-    {@const info = pageInfo()}
-    {@const parsedData = parsed()}
-
-    <div class="side-by-side">
-      <!-- Left: image -->
-      <div class="image-panel">
-        <img src={imageUrl(pageNumber)} alt="Page {pageNumber}" />
-      </div>
-
-      <!-- Right: parsed data -->
-      <div class="data-panel">
-        {#if info?.page_type}
-          <div class="type-badge" style="background: {pageTypeColor(info.page_type)}">
-            {pageTypeLabel(info.page_type)}
+    {#each [pageInfo()] as info}
+      {#each [parsed()] as parsedData}
+        <div class="side-by-side">
+          <!-- Left: image -->
+          <div class="image-panel">
+            <img src={imageUrl(pageNumber)} alt="Page {pageNumber}" />
           </div>
-        {:else}
-          <div class="type-badge unclassified">Unclassified</div>
-        {/if}
 
-        {#if parsedData}
-          {#if getMetaFields(parsedData.parsed_data || {}).length > 0}
-            <div class="fields-card">
-              {#each getMetaFields(parsedData.parsed_data || {}) as [key, value]}
-                <div class="field-row" class:field-highlight={key === highlightField} id={key === highlightField ? 'hl-target' : undefined}>
-                  <span class="field-label">{formatFieldName(key)}</span>
-                  <span class="field-value" class:currency={isCurrencyField(key)}>{colDisplayValue(key, value)}</span>
-                </div>
-              {/each}
-            </div>
-          {/if}
-
-          {#if hasLineItems(parsedData)}
-            {@const items = getLineItems(parsedData)}
-            {@const cols = lineItemColumns(items)}
-            <div class="table-header">
-              <h3>Line Items ({items.length})</h3>
-              <CopyTableButton columns={cols} rows={items} />
-            </div>
-            <div class="table-scroll">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th class="row-num">#</th>
-                    {#each cols as col}
-                      <th class:num-col={isCurrencyField(col)}>{colHeaderName(col)}</th>
-                    {/each}
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each items as item, idx}
-                    <tr>
-                      <td class="row-num">{idx + 1}</td>
-                      {#each cols as col}
-                        <td class:num-col={isCurrencyField(col)}>{colDisplayValue(col, item[col])}</td>
-                      {/each}
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-
-            {#if parsedData.parsed_data?.subtotal !== undefined}
-              <div class="subtotal">Subtotal: {formatCurrency(parsedData.parsed_data.subtotal)}</div>
+          <!-- Right: parsed data -->
+          <div class="data-panel">
+            {#if info?.page_type}
+              <div class="type-badge" style="background: {pageTypeColor(info.page_type)}">
+                {pageTypeLabel(info.page_type)}
+              </div>
+            {:else}
+              <div class="type-badge unclassified">Unclassified</div>
             {/if}
-          {/if}
-        {:else}
-          <div class="empty">No parsed data for this page.</div>
-        {/if}
-      </div>
-    </div>
 
-    <!-- Page strip navigator -->
-    <div class="page-strip">
-      {#each documentData.pages as p}
-        <a
-          href={pageUrl(p.page_number)}
-          class="strip-chip"
-          class:strip-active={p.page_number === pageNumber}
-          style="border-bottom-color: {pageTypeColor(p.page_type)}"
-        >
-          {p.page_number}
-        </a>
+            {#if parsedData}
+              {#if getMetaFields(parsedData.parsed_data || {}).length > 0}
+                <div class="fields-card">
+                  {#each getMetaFields(parsedData.parsed_data || {}) as [key, value]}
+                    <div class="field-row" class:field-highlight={key === highlightField} id={key === highlightField ? 'hl-target' : undefined}>
+                      <span class="field-label">{formatFieldName(key)}</span>
+                      <span class="field-value" class:currency={isCurrencyField(key)}>{colDisplayValue(key, value)}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
+              {#if hasLineItems(parsedData)}
+                {#each [getLineItems(parsedData)] as items}
+                  {#each [lineItemColumns(items)] as cols}
+                    <div class="table-header">
+                      <h3>Line Items ({items.length})</h3>
+                      <CopyTableButton columns={cols} rows={items} />
+                    </div>
+                    <div class="table-scroll">
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th class="row-num">#</th>
+                            {#each cols as col}
+                              <th class:num-col={isCurrencyField(col)}>{colHeaderName(col)}</th>
+                            {/each}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each items as item, idx}
+                            <tr>
+                              <td class="row-num">{idx + 1}</td>
+                              {#each cols as col}
+                                <td class:num-col={isCurrencyField(col)}>{colDisplayValue(col, item[col])}</td>
+                              {/each}
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {#if parsedData.parsed_data?.subtotal !== undefined}
+                      <div class="subtotal">Subtotal: {formatCurrency(parsedData.parsed_data.subtotal)}</div>
+                    {/if}
+                  {/each}
+                {/each}
+              {/if}
+            {:else}
+              <div class="empty">No parsed data for this page.</div>
+            {/if}
+          </div>
+        </div>
       {/each}
-    </div>
+    {/each}
   {/if}
 </main>
 
@@ -283,21 +341,31 @@
 
   .loading, .empty { text-align: center; padding: 3em; color: #94a3b8; }
 
-  .breadcrumb { display: flex; align-items: center; gap: 0.4em; font-size: 0.9em; color: #64748b; margin-bottom: 1.5em; }
+  .breadcrumb { display: flex; align-items: center; gap: 0.4em; font-size: 0.9em; color: #64748b; margin-bottom: 1em; }
   .breadcrumb a { color: #0066cc; text-decoration: none; }
   .breadcrumb a:hover { text-decoration: underline; }
   .breadcrumb .sep { color: #cbd5e1; }
 
-  .page-nav-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5em; }
-  .page-nav-bar h1 { font-size: 1.3em; margin: 0; }
-  .page-nav-left, .page-nav-right { min-width: 120px; }
-  .page-nav-right { text-align: right; }
-  .btn-nav { display: inline-block; padding: 0.5em 1em; background: #f1f5f9; border: 1px solid #d1d5db; border-radius: 4px; color: #475569; text-decoration: none; font-size: 0.85em; }
-  .btn-nav:hover { background: #e2e8f0; }
-
-  .model-bar { display: flex; align-items: center; gap: 0.5em; margin-bottom: 1.5em; }
-  .model-bar label { font-size: 0.85em; color: #64748b; }
-  .model-bar select { padding: 0.3em 0.5em; font-size: 0.85em; border: 1px solid #d1d5db; border-radius: 4px; }
+  .page-nav { display: flex; align-items: center; gap: 0.5em; margin-bottom: 1.5em; flex-wrap: wrap; justify-content: center; }
+  .btn-arrow {
+    display: flex; align-items: center; justify-content: center;
+    width: 2.2em; height: 2.2em; border: 1px solid #d1d5db; border-radius: 6px;
+    background: #f1f5f9; color: #475569; text-decoration: none; font-size: 0.9em; font-weight: 600;
+    flex-shrink: 0;
+  }
+  .btn-arrow:hover:not(.disabled) { background: #e2e8f0; }
+  .btn-arrow.disabled { opacity: 0.3; cursor: default; }
+  .page-strip { display: flex; flex-wrap: wrap; gap: 0.3em; }
+  .page-chip {
+    display: flex; align-items: center; justify-content: center;
+    width: 2.2em; height: 2.2em; border: 2px solid; border-radius: 6px;
+    text-decoration: none; color: #1e293b; font-size: 0.82em; font-weight: 600;
+    transition: transform 0.1s, box-shadow 0.1s; opacity: 0.6;
+  }
+  .page-chip:hover { transform: scale(1.1); box-shadow: 0 2px 8px rgba(0,0,0,0.12); opacity: 0.85; }
+  .page-chip-active { opacity: 1; font-weight: 800; transform: scale(1.1); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  .model-inline { margin-left: auto; }
+  .model-inline select { padding: 0.3em 0.5em; font-size: 0.82em; border: 1px solid #d1d5db; border-radius: 4px; }
 
   .side-by-side { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(400px, 1.2fr); gap: 2em; align-items: start; margin-bottom: 2em; }
   @media (max-width: 1000px) { .side-by-side { grid-template-columns: 1fr; } }
@@ -330,13 +398,21 @@
   .data-table .num-col { text-align: right; font-variant-numeric: tabular-nums; font-family: monospace; }
   .subtotal { padding: 0.6em 1em; text-align: right; font-weight: 600; font-size: 0.9em; border-top: 2px solid #e2e8f0; background: #f8fafc; border-radius: 0 0 8px 8px; }
 
-  .page-strip { display: flex; flex-wrap: wrap; gap: 0.35em; margin-top: 2em; padding-top: 1.5em; border-top: 1px solid #e2e8f0; }
-  .strip-chip {
-    display: flex; align-items: center; justify-content: center;
-    width: 2.2em; height: 2.2em; border: 1px solid #d1d5db;
-    border-bottom: 3px solid; border-radius: 4px; background: white;
-    text-decoration: none; color: #475569; font-size: 0.85em; font-weight: 500;
+  :global(.thumb-tooltip) {
+    position: fixed;
+    transform: translate(-50%, -100%);
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0;
+    transition: opacity 0.15s;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    padding: 4px;
+    max-width: 200px;
   }
-  .strip-chip:hover { background: #f1f5f9; }
-  .strip-active { background: #1e293b !important; color: white !important; border-color: #1e293b !important; }
+  :global(.thumb-tooltip.visible) { opacity: 1; }
+  :global(.thumb-tooltip img) { display: block; width: 100%; height: auto; border-radius: 4px; }
+  :global(.thumb-loading) { display: block; padding: 1em 1.5em; color: #94a3b8; font-size: 0.8em; }
 </style>

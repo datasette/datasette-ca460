@@ -18,10 +18,9 @@ dependencies = [
     "pydantic>=2.0.0",
     "llm-gemini>=0.28.2",
     "datasette-llm-accountant @ https://github.com/datasette/datasette-llm-accountant/archive/refs/heads/configurable-pricing.zip",
-    #"datasette-plugin-router @ https://github.com/datasette/datasette-plugin-router/archive/refs/heads/main.zip",
-    "datasette-plugin-router @ https://github.com/datasette/datasette-plugin-router/archive/3f62758f4b35402dafd1308dcbcbba1c885b0f92.zip",
+    "datasette-plugin-router>=0.0.1a2",
     "datasette-vite>=0.0.1a2",
-    "pdf-lib @ file:///Users/alex/projects/pdf-lib-rs-py/target/wheels/pdf_lib-0.1.0-cp313-cp313-macosx_11_0_arm64.whl",
+    "pdf-lib-rs-py",
     "click",
 ]
 
