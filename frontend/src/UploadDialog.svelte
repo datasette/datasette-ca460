@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { models as fetchModels, uploadPdf, processDocument, sync, syncEvents } from './api';
+  import { models as fetchModels, uploadPdf, processDocument, syncEvents } from './api';
+  import DocumentCloudBrowser from './DocumentCloudBrowser.svelte';
 
   interface Props {
     database: string;
@@ -27,9 +28,7 @@
   let dragging = $state(false);
   let uploading = $state(false);
 
-  // DocumentCloud
-  let projectId = $state('');
-  let submitting = $state(false);
+  // DocumentCloud sync progress (shared between DC browser import and legacy)
   let syncJobId: string | null = $state(null);
   let syncStatus: string | null = $state(null);
   let syncEvents_: { type: string; message: string }[] = $state([]);
@@ -117,37 +116,12 @@
     }
   }
 
-  // --- DocumentCloud ---
+  // --- DocumentCloud import job tracking ---
 
-  async function handleSync(e: Event) {
-    e.preventDefault();
-    if (!projectId) { error = 'Enter a project ID'; return; }
-    const pid = parseInt(projectId, 10);
-    if (isNaN(pid)) { error = 'Project ID must be a number'; return; }
-
-    submitting = true;
-    error = null;
-    syncJobId = null;
-    syncStatus = null;
-    syncEvents_ = [];
-
-    try {
-      const { data, error: syncErr } = await sync(database, {
-        project_id: pid,
-        page_type_model: pageTypeModel,
-        parser_model: parserModel,
-      });
-
-      if (syncErr || !data) { error = (syncErr as any) || 'Failed to start sync'; return; }
-
-      syncJobId = data.sync_job_id;
-      syncStatus = 'running';
-      startPolling();
-    } catch (e) {
-      error = 'Failed to start sync';
-    } finally {
-      submitting = false;
-    }
+  function handleDcJobStarted(jobId: string) {
+    syncJobId = jobId;
+    syncStatus = 'running';
+    startPolling();
   }
 
   function startPolling() {
@@ -188,11 +162,11 @@
       <button class="tab" class:active={activeTab === 'documentcloud'} onclick={() => activeTab = 'documentcloud'}>DocumentCloud</button>
     </div>
 
-    {#if error}
-      <div class="error-msg">{error}</div>
-    {/if}
-
     {#if activeTab === 'upload'}
+      {#if error}
+        <div class="error-msg">{error}</div>
+      {/if}
+
       <div
         class="drop-zone"
         class:drop-zone-active={dragging}
@@ -241,13 +215,8 @@
       {/if}
 
     {:else}
-      <form onsubmit={handleSync}>
-        <div class="form-field">
-          <label for="dc-project-id">Project ID:</label>
-          <input type="text" id="dc-project-id" placeholder="e.g., 123456" bind:value={projectId} required />
-        </div>
-
-        <div class="model-row">
+      {#if !syncJobId}
+        <div class="model-row dc-models">
           <div class="model-field">
             <label for="dc-ptm">Classifier:</label>
             <select id="dc-ptm" bind:value={pageTypeModel} disabled={loadingModels}>
@@ -262,14 +231,13 @@
           </div>
         </div>
 
-        <div class="actions">
-          <button type="submit" class="btn-primary" disabled={submitting || loadingModels}>
-            {submitting ? 'Starting...' : 'Sync Project'}
-          </button>
-        </div>
-      </form>
-
-      {#if syncJobId}
+        <DocumentCloudBrowser
+          {database}
+          {pageTypeModel}
+          {parserModel}
+          onJobStarted={handleDcJobStarted}
+        />
+      {:else}
         <div class="sync-progress">
           <div class="sync-status">
             <span>Status:</span>
@@ -292,7 +260,7 @@
 </dialog>
 
 <style>
-  dialog { border: none; border-radius: 12px; padding: 0; max-width: 540px; width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  dialog { border: none; border-radius: 12px; padding: 0; max-width: 720px; width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
   dialog::backdrop { background: rgba(0,0,0,0.4); }
 
   .dialog-content { padding: 1.5em; }
@@ -316,11 +284,8 @@
   .file-info { display: flex; flex-direction: column; gap: 0.2em; }
   .file-size { font-size: 0.85em; color: #64748b; }
 
-  .form-field { margin-bottom: 1em; }
-  .form-field label { display: block; font-size: 0.85em; color: #64748b; margin-bottom: 0.25em; }
-  .form-field input { width: 100%; padding: 0.5em; font-size: 0.9em; border: 1px solid #d1d5db; border-radius: 4px; box-sizing: border-box; }
-
   .model-row { display: flex; gap: 1em; margin-top: 1.25em; }
+  .dc-models { margin-top: 0; margin-bottom: 1em; }
   .model-field { flex: 1; }
   .model-field label { display: block; font-size: 0.8em; color: #64748b; margin-bottom: 0.25em; }
   .model-field select { width: 100%; padding: 0.35em 0.5em; font-size: 0.85em; border: 1px solid #d1d5db; border-radius: 4px; }
@@ -332,13 +297,13 @@
   .btn-secondary { padding: 0.6em 1.2em; background: #f1f5f9; color: #475569; border: 1px solid #d1d5db; border-radius: 6px; cursor: pointer; font-size: 0.9em; }
   .btn-secondary:hover:not(:disabled) { background: #e2e8f0; }
 
-  .sync-progress { margin-top: 1.25em; border-top: 1px solid #e2e8f0; padding-top: 1em; }
+  .sync-progress { margin-top: 0.5em; }
   .sync-status { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; font-size: 0.9em; }
   .badge { padding: 0.15em 0.5em; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
   .badge-running { background: #fef3c7; color: #92400e; }
   .badge-completed { background: #d1fae5; color: #065f46; }
   .badge-failed { background: #fee2e2; color: #991b1b; }
-  .events-log { max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 0.78em; line-height: 1.6; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 0.5em; }
+  .events-log { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.78em; line-height: 1.6; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 0.5em; }
   .event-info { color: #475569; }
   .event-warning { color: #92400e; }
   .event-error { color: #991b1b; font-weight: 600; }

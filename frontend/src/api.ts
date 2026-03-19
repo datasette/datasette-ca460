@@ -79,3 +79,55 @@ export async function processDocument(database: string, data: {
     body: data as any,
   });
 }
+
+// ---------------------------------------------------------------------------
+// DocumentCloud browsing / import
+// ---------------------------------------------------------------------------
+
+export async function dcConfig(database: string) {
+  return client.GET("/{database}/-/ca460/api/dc/config", {
+    params: { path: { database } },
+  });
+}
+
+export async function dcSearch(database: string, q: string, page = 1, ordering = "-created_at") {
+  return client.GET("/{database}/-/ca460/api/dc/search", {
+    params: {
+      path: { database },
+      query: { q, page: String(page), ordering } as any,
+    },
+  });
+}
+
+export async function dcDocument(database: string, dcId: number) {
+  return client.GET("/{database}/-/ca460/api/dc/document/{dc_id}", {
+    params: { path: { database, dc_id: String(dcId) } },
+  });
+}
+
+export async function dcProject(database: string, projectId: number, page = 1) {
+  return client.GET("/{database}/-/ca460/api/dc/project/{project_id}", {
+    params: {
+      path: { database, project_id: String(projectId) },
+      query: { page: String(page) } as any,
+    },
+  });
+}
+
+export async function dcResolveUrl(database: string, url: string) {
+  return client.POST("/{database}/-/ca460/api/dc/resolve-url", {
+    params: { path: { database } },
+    body: { url } as any,
+  });
+}
+
+export async function dcImport(database: string, data: {
+  document_ids: number[];
+  page_type_model: string;
+  parser_model: string;
+}) {
+  return client.POST("/{database}/-/ca460/api/dc/import", {
+    params: { path: { database } },
+    body: data as any,
+  });
+}
