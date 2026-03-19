@@ -19,6 +19,6 @@ jobs:
     - uses: actions/setup-node@v6
     - uses: extractions/setup-just@v3
     - run: npm install --prefix frontend
-    - run: just frontend-build
+    - run: just frontend
     - run: uv run pytest
 
