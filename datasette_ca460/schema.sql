@@ -61,6 +61,22 @@ CREATE TABLE IF NOT EXISTS page_parsed(
 );
 
 
+CREATE TABLE IF NOT EXISTS page_tasks(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sync_job_id TEXT REFERENCES sync_jobs(id),
+    document_id INTEGER REFERENCES documents(id),
+    page_id INTEGER REFERENCES pages(id),
+    page_number INTEGER,
+    task_type TEXT NOT NULL,  -- 'classify' or 'parse'
+    page_type TEXT,           -- set after classification, used for parse tasks
+    model TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
 create table if not exists schedule_a_itemizations(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   page_parsed_id INTEGER REFERENCES page_parsed(id),

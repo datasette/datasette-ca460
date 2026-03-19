@@ -4,7 +4,16 @@ from datasette import Response
 from datasette_plugin_router import Body
 from pydantic import BaseModel
 import json
-from .sync import run_sync_in_background, run_process_document_in_background, upload_pdf, ensure_schema
+from .sync import (
+    run_sync_in_background,
+    run_process_document_in_background,
+    run_resume_in_background,
+    upload_pdf,
+    ensure_schema,
+    get_task_progress,
+    reset_stale_tasks,
+    DEFAULT_WORKERS,
+)
 from .router import router, check_permission
 import asyncio
 import uuid
@@ -566,5 +575,77 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
     return Response.json(ProcessDocumentOutput(
         sync_job_id=sync_job_id,
         document_id=params.document_id,
+    ).model_dump())
+
+
+@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/sync/(?P<sync_job_id>[^/]+)/tasks$")
+@check_permission()
+async def ca460_api_task_progress(request, datasette, database: str, sync_job_id: str):
+    """Get task-level progress for a sync job."""
+    try:
+        db = datasette.get_database(database)
+    except KeyError:
+        return Response.json({"error": "Database not found"}, status=404)
+
+    progress = await get_task_progress(db, sync_job_id)
+    return Response.json({"sync_job_id": sync_job_id, "tasks": progress})
+
+
+class ResumeParams(BaseModel):
+    sync_job_id: str
+
+class ResumeOutput(BaseModel):
+    sync_job_id: str
+    reset_count: int
+
+@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/resume$", output=ResumeOutput)
+@check_permission()
+async def ca460_api_resume(request, datasette, database: str, params: Annotated[ResumeParams, Body()]):
+    """Resume a stalled sync job by resetting stale tasks and re-running workers."""
+    try:
+        db = datasette.get_database(database)
+    except KeyError:
+        return Response.json({"error": "Database not found"}, status=404)
+
+    # Get the job's models
+    def _get_job(conn):
+        cursor = conn.execute(
+            "SELECT page_type_model, parser_model, status FROM sync_jobs WHERE id = ?",
+            (params.sync_job_id,)
+        )
+        return cursor.fetchone()
+
+    job = await db.execute_write_fn(_get_job)
+    if not job:
+        return Response.json({"error": "Sync job not found"}, status=404)
+
+    page_type_model, parser_model, status = job
+
+    # Reset stale running tasks
+    reset_count = await reset_stale_tasks(db, params.sync_job_id)
+
+    # Mark job as running again if it was stuck
+    if status != "running":
+        def _reopen(conn):
+            conn.execute(
+                "UPDATE sync_jobs SET status = 'running', completed_at = NULL, error = NULL WHERE id = ?",
+                (params.sync_job_id,)
+            )
+            conn.commit()
+        await db.execute_write_fn(_reopen)
+
+    # Restart workers in background
+    asyncio.create_task(
+        run_resume_in_background(
+            datasette,
+            database,
+            params.sync_job_id,
+            parser_model,
+        )
+    )
+
+    return Response.json(ResumeOutput(
+        sync_job_id=params.sync_job_id,
+        reset_count=reset_count,
     ).model_dump())
 

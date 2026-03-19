@@ -1,10 +1,15 @@
 import asyncio
+import uuid
 from pathlib import Path
 
 import click
 
-from ._db import apply_schema, store_pdf, get_pages
-from ..sync import predict_page_type, parse_page, get_page_image, PAGE_TYPES
+from ._db import apply_schema, store_pdf
+from ..sync import (
+    process_document,
+    CliProgressReporter,
+    DEFAULT_WORKERS,
+)
 
 
 def _create_datasette(db_path: Path):
@@ -19,42 +24,42 @@ async def _process_document(
     document_id: int,
     page_type_model: str,
     parser_model: str,
+    num_workers: int,
 ):
-    """Classify and parse all pages, printing progress."""
+    """Classify and parse all pages using parallel workers."""
     ds = _create_datasette(db_path)
     await ds.invoke_startup()
     db = ds.get_database(db_path.stem)
 
-    pages = get_pages(db_path, document_id)
+    sync_job_id = str(uuid.uuid4())
 
-    # Classify
-    click.echo(f"Classifying {len(pages)} pages...")
-    classifications: dict[int, str] = {}
-    for page_id, page_number in pages:
-        predicted = await predict_page_type(ds, db, page_id, page_type_model)
-        classifications[page_id] = predicted
-        click.echo(f"  Page {page_number}: {predicted}")
+    # Create a sync job record
+    def _create_job(conn):
+        conn.execute(
+            "INSERT INTO sync_jobs (id, page_type_model, parser_model) VALUES (?, ?, ?)",
+            (sync_job_id, page_type_model, parser_model)
+        )
+        conn.commit()
 
-    click.echo("Classification complete.")
+    await db.execute_write_fn(_create_job)
 
-    # Parse
-    page_types_found = set(classifications.values())
-    for page_type in PAGE_TYPES:
-        if page_type == "unknown" or page_type not in page_types_found:
-            continue
+    reporter = CliProgressReporter()
 
-        matching = [
-            (pid, pn)
-            for pid, pn in pages
-            if classifications.get(pid) == page_type
-        ]
+    await process_document(
+        ds, db, sync_job_id, document_id,
+        page_type_model, parser_model, num_workers, reporter,
+    )
 
-        click.echo(f"Parsing {len(matching)} {page_type} page{'s' if len(matching) != 1 else ''}...")
-        for page_id, page_number in matching:
-            await parse_page(ds, db, page_id, page_type, parser_model)
-            click.echo(f"  Parsed page {page_number}")
+    # Mark job completed
+    def _complete_job(conn):
+        from datetime import datetime
+        conn.execute(
+            "UPDATE sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), sync_job_id)
+        )
+        conn.commit()
 
-    click.echo("Done.")
+    await db.execute_write_fn(_complete_job)
 
 
 @click.command(name="add")
@@ -72,7 +77,14 @@ async def _process_document(
 )
 @click.option("--classifier-model", default=None, help="Model for page classification")
 @click.option("--parser-model", default=None, help="Model for page parsing")
-def ca460_add(pdf_path, db_path_str, model, classifier_model, parser_model):
+@click.option(
+    "--workers", "-w",
+    default=DEFAULT_WORKERS,
+    type=int,
+    show_default=True,
+    help="Number of parallel workers",
+)
+def ca460_add(pdf_path, db_path_str, model, classifier_model, parser_model, workers):
     "Add a Form 460 PDF to a database"
 
     pdf_path = Path(pdf_path)
@@ -100,4 +112,4 @@ def ca460_add(pdf_path, db_path_str, model, classifier_model, parser_model):
     click.echo(f"Using classifier: {cls_model}")
     click.echo(f"Using parser: {prs_model}")
 
-    asyncio.run(_process_document(db_path, document_id, cls_model, prs_model))
+    asyncio.run(_process_document(db_path, document_id, cls_model, prs_model, workers))
