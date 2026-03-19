@@ -10,12 +10,12 @@ Processing a Form 460 PDF happens in two phases per page:
   2. **Parse** — a type-specific LLM prompt extracts structured data from the
      full page image into a Pydantic schema.
 
-Both phases are tracked as rows in the ``page_tasks`` table (see schema.sql).
+Both phases are tracked as rows in the ``datasette_ca460_page_tasks`` table (see schema.sql).
 
 Parallel task queue
 ~~~~~~~~~~~~~~~~~~~
 Rather than processing pages sequentially, work is broken into small tasks
-stored in ``page_tasks`` with a status lifecycle::
+stored in ``datasette_ca460_page_tasks`` with a status lifecycle::
 
     pending → running → completed
                       → failed
@@ -46,7 +46,7 @@ Progress reporting
 ~~~~~~~~~~~~~~~~~~
 ``ProgressReporter`` is a protocol with two implementations:
 
-- ``DbProgressReporter`` — writes to ``sync_events`` for the web UI to poll.
+- ``DbProgressReporter`` — writes to ``datasette_ca460_sync_events`` for the web UI to poll.
 - ``CliProgressReporter`` — prints to the terminal via ``click.echo()``.
 
 Both are passed into ``process_document()`` / ``run_workers()`` so the same
@@ -61,20 +61,19 @@ Entry points
 - ``resume_job()`` — re-enters a stalled job. Resets stale tasks, then runs
   workers against the existing task queue.
 - ``run_*_in_background()`` — thin wrappers that catch exceptions and update
-  ``sync_jobs.status`` to ``completed`` or ``failed``.
+  ``datasette_ca460_sync_jobs.status`` to ``completed`` or ``failed``.
 """
 
 from dataclasses import asdict
 import json
 import time
-import httpx
 from io import BytesIO
 from PIL import Image
-from pathlib import Path
 from datasette_llm_accountant import LlmWrapper
 import asyncio
 from contextlib import contextmanager
-from documentcloud import DocumentCloud
+from .documentcloud import DocumentCloudClient, page_image_url
+from .sources import get_source_for_page, DocumentCloudSource
 from datetime import datetime, timedelta
 from typing import Protocol
 import traceback
@@ -179,21 +178,11 @@ def extract_pdf_page_images(pdf_bytes: bytes) -> list[bytes]:
 # Database helpers
 # ---------------------------------------------------------------------------
 
-SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
-
-
-async def ensure_schema(db):
-    """Initialize database schema."""
-    def init_schema(conn):
-        conn.executescript(SCHEMA)
-    await db.execute_write_fn(init_schema)
-
-
 async def log_event(db, sync_job_id: str, event_type: str, message: str):
     """Log a sync event to the database."""
     def _log(conn):
         conn.execute(
-            "INSERT INTO sync_events (sync_job_id, event_type, message) VALUES (?, ?, ?)",
+            "INSERT INTO datasette_ca460_sync_events (sync_job_id, event_type, message) VALUES (?, ?, ?)",
             (sync_job_id, event_type, message)
         )
         conn.commit()
@@ -202,14 +191,9 @@ async def log_event(db, sync_job_id: str, event_type: str, message: str):
 
 
 async def get_page_image(db, page_id: int) -> bytes:
-    """Get the stored image for a page."""
-    def _get(conn):
-        cursor = conn.execute("SELECT image FROM pages WHERE id = ?", (page_id,))
-        row = cursor.fetchone()
-        if not row or not row[0]:
-            raise ValueError(f"No image stored for page {page_id}")
-        return bytes(row[0])
-    return await db.execute_write_fn(_get)
+    """Get image bytes for a page via its document source."""
+    source = await get_source_for_page(db, page_id)
+    return await source.get_page_image_bytes(db, page_id)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +210,7 @@ async def predict_page_type(
     # Check if already predicted
     def _check_existing(conn):
         cursor = conn.execute(
-            "SELECT predicted_page_type FROM page_type_predictions WHERE page_id = ? AND model = ?",
+            "SELECT predicted_page_type FROM datasette_ca460_page_type_predictions WHERE page_id = ? AND model = ?",
             (page_id, page_type_model)
         )
         row = cursor.fetchone()
@@ -264,7 +248,7 @@ async def predict_page_type(
     # Store prediction
     def _store_prediction(conn):
         conn.execute(
-            """INSERT INTO page_type_predictions
+            """INSERT INTO datasette_ca460_page_type_predictions
             (page_id, model, predicted_page_type, model_usage, timing)
             VALUES (?, ?, ?, ?, ?)""",
             (
@@ -317,7 +301,7 @@ async def parse_page(
     # Store parsed data
     def _store_parsed(conn):
         conn.execute(
-            """INSERT INTO page_parsed
+            """INSERT INTO datasette_ca460_page_parsed
             (page_id, page_type, model, model_usage, timing, parsed_data)
             VALUES (?, ?, ?, ?, ?, ?)""",
             (
@@ -338,7 +322,7 @@ async def parse_page(
 # Task queue — SQLite-backed work queue for parallel page processing
 #
 # Each unit of work (classify one page, parse one page) is a row in
-# page_tasks. Workers atomically claim tasks with UPDATE ... RETURNING.
+# datasette_ca460_page_tasks. Workers atomically claim tasks with UPDATE ... RETURNING.
 # On crash, stale "running" tasks are reset to "pending" on the next run.
 # ---------------------------------------------------------------------------
 
@@ -351,27 +335,27 @@ async def create_classify_tasks(
     """Create classify tasks for all pages of a document."""
     def _create(conn):
         cursor = conn.execute(
-            "SELECT id, page_number FROM pages WHERE document_id = ? ORDER BY page_number",
+            "SELECT id, page_number FROM datasette_ca460_pages WHERE document_id = ? ORDER BY page_number",
             (document_id,)
         )
         pages = cursor.fetchall()
         for page_id, page_number in pages:
             # Skip if already classified with this model
             existing = conn.execute(
-                "SELECT 1 FROM page_type_predictions WHERE page_id = ? AND model = ?",
+                "SELECT 1 FROM datasette_ca460_page_type_predictions WHERE page_id = ? AND model = ?",
                 (page_id, page_type_model)
             ).fetchone()
             if existing:
                 continue
             # Skip if task already exists
             existing_task = conn.execute(
-                "SELECT 1 FROM page_tasks WHERE sync_job_id = ? AND page_id = ? AND task_type = 'classify'",
+                "SELECT 1 FROM datasette_ca460_page_tasks WHERE sync_job_id = ? AND page_id = ? AND task_type = 'classify'",
                 (sync_job_id, page_id)
             ).fetchone()
             if existing_task:
                 continue
             conn.execute(
-                """INSERT INTO page_tasks
+                """INSERT INTO datasette_ca460_page_tasks
                 (sync_job_id, document_id, page_id, page_number, task_type, model, status)
                 VALUES (?, ?, ?, ?, 'classify', ?, 'pending')""",
                 (sync_job_id, document_id, page_id, page_number, page_type_model)
@@ -387,7 +371,7 @@ async def reset_stale_tasks(db, sync_job_id: str):
     def _reset(conn):
         cutoff = (datetime.now() - timedelta(minutes=STALE_TASK_TIMEOUT_MINUTES)).isoformat()
         cursor = conn.execute(
-            """UPDATE page_tasks SET status = 'pending', started_at = NULL
+            """UPDATE datasette_ca460_page_tasks SET status = 'pending', started_at = NULL
             WHERE sync_job_id = ? AND status = 'running' AND started_at < ?""",
             (sync_job_id, cutoff)
         )
@@ -406,9 +390,9 @@ async def claim_task(db, sync_job_id: str, preferred_type: str = "classify"):
         now = datetime.now().isoformat()
         for task_type in (preferred_type, other_type):
             cursor = conn.execute(
-                """UPDATE page_tasks SET status = 'running', started_at = ?
+                """UPDATE datasette_ca460_page_tasks SET status = 'running', started_at = ?
                 WHERE id = (
-                    SELECT id FROM page_tasks
+                    SELECT id FROM datasette_ca460_page_tasks
                     WHERE sync_job_id = ? AND status = 'pending' AND task_type = ?
                     ORDER BY id LIMIT 1
                 ) RETURNING id, page_id, page_number, task_type, page_type, model, document_id""",
@@ -435,7 +419,7 @@ async def complete_task(db, task_id: int):
     """Mark a task as completed."""
     def _complete(conn):
         conn.execute(
-            "UPDATE page_tasks SET status = 'completed', completed_at = ? WHERE id = ?",
+            "UPDATE datasette_ca460_page_tasks SET status = 'completed', completed_at = ? WHERE id = ?",
             (datetime.now().isoformat(), task_id)
         )
         conn.commit()
@@ -447,7 +431,7 @@ async def fail_task(db, task_id: int, error: str):
     """Mark a task as failed."""
     def _fail(conn):
         conn.execute(
-            "UPDATE page_tasks SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
+            "UPDATE datasette_ca460_page_tasks SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
             (datetime.now().isoformat(), error, task_id)
         )
         conn.commit()
@@ -471,20 +455,20 @@ async def create_parse_task_for_page(
     def _create(conn):
         # Skip if already parsed with this model
         existing = conn.execute(
-            "SELECT 1 FROM page_parsed WHERE page_id = ? AND page_type = ? AND model = ?",
+            "SELECT 1 FROM datasette_ca460_page_parsed WHERE page_id = ? AND page_type = ? AND model = ?",
             (page_id, page_type, parser_model)
         ).fetchone()
         if existing:
             return
         # Skip if parse task already exists
         existing_task = conn.execute(
-            "SELECT 1 FROM page_tasks WHERE sync_job_id = ? AND page_id = ? AND task_type = 'parse'",
+            "SELECT 1 FROM datasette_ca460_page_tasks WHERE sync_job_id = ? AND page_id = ? AND task_type = 'parse'",
             (sync_job_id, page_id)
         ).fetchone()
         if existing_task:
             return
         conn.execute(
-            """INSERT INTO page_tasks
+            """INSERT INTO datasette_ca460_page_tasks
             (sync_job_id, document_id, page_id, page_number, task_type, page_type, model, status)
             VALUES (?, ?, ?, ?, 'parse', ?, ?, 'pending')""",
             (sync_job_id, document_id, page_id, page_number, page_type, parser_model)
@@ -498,7 +482,7 @@ async def get_task_progress(db, sync_job_id: str) -> dict:
     """Get task progress counts for a job."""
     def _progress(conn):
         cursor = conn.execute(
-            "SELECT task_type, status, COUNT(*) FROM page_tasks WHERE sync_job_id = ? GROUP BY task_type, status",
+            "SELECT task_type, status, COUNT(*) FROM datasette_ca460_page_tasks WHERE sync_job_id = ? GROUP BY task_type, status",
             (sync_job_id,)
         )
         results = {}
@@ -649,7 +633,7 @@ async def run_resume_in_background(
 
         def _complete_job(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
                 (datetime.now().isoformat(), sync_job_id)
             )
             conn.commit()
@@ -662,7 +646,7 @@ async def run_resume_in_background(
 
         def _fail_job(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
                 (datetime.now().isoformat(), error_msg_short, sync_job_id)
             )
             conn.commit()
@@ -675,26 +659,26 @@ async def run_resume_in_background(
 
 async def upload_pdf(db, pdf_bytes: bytes, filename: str) -> int:
     """Upload a PDF, extract page images, store everything. Returns document_id."""
-    await ensure_schema(db)
+
 
     loop = asyncio.get_event_loop()
     page_images = await loop.run_in_executor(None, extract_pdf_page_images, pdf_bytes)
 
     def _store(conn):
         cursor = conn.execute(
-            "INSERT INTO documents (source, page_count, data) VALUES (?, ?, ?)",
+            "INSERT INTO datasette_ca460_documents(source, page_count, data) VALUES (?, ?, ?) RETURNING id",
             ("upload", len(page_images), json.dumps({"title": filename}))
         )
-        document_id = cursor.lastrowid
+        document_id = cursor.fetchone()[0]
 
         conn.execute(
-            "INSERT INTO document_files (document_id, filename, content) VALUES (?, ?, ?)",
+            "INSERT INTO datasette_ca460_document_files (document_id, filename, content) VALUES (?, ?, ?)",
             (document_id, filename, pdf_bytes)
         )
 
         for page_number, image_bytes in enumerate(page_images, start=1):
             conn.execute(
-                "INSERT INTO pages (document_id, page_number, image) VALUES (?, ?, ?)",
+                "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?)",
                 (document_id, page_number, image_bytes)
             )
 
@@ -708,72 +692,82 @@ async def upload_pdf(db, pdf_bytes: bytes, filename: str) -> int:
 # DocumentCloud sync flow
 # ---------------------------------------------------------------------------
 
-async def sync_document(db, document) -> int:
-    """Sync a document to the database if it doesn't exist. Returns document_id."""
+async def sync_dc_document(db, doc_data: dict) -> int:
+    """Sync a DocumentCloud document (from API JSON) to the database. Returns document_id."""
+    doc_id = doc_data["id"]
+    page_count = doc_data.get("page_count", 0)
+
     def _sync(conn):
         cursor = conn.execute(
-            "SELECT id FROM documents WHERE id = ?",
-            (document.id,)
+            "SELECT id FROM datasette_ca460_documents WHERE id = ?",
+            (doc_id,)
         )
         row = cursor.fetchone()
 
         if not row:
             conn.execute(
-                "INSERT INTO documents (id, source, page_count, data) VALUES (?, ?, ?, ?)",
-                (document.id, "documentcloud", document.page_count, json.dumps(document.data))
+                "INSERT INTO datasette_ca460_documents(id, source, page_count, data) VALUES (?, ?, ?, ?)",
+                (doc_id, "documentcloud", page_count, json.dumps(doc_data))
             )
         conn.commit()
 
     await db.execute_write_fn(_sync)
-    return document.id
+    return doc_id
 
 
-async def sync_page_image(db, document, document_id: int, page_number: int) -> int:
-    """Sync a page and its image to the database. Returns page_id."""
-    def _check_existing(conn):
-        cursor = conn.execute(
-            "SELECT id, image FROM pages WHERE document_id = ? AND page_number = ?",
-            (document_id, page_number)
-        )
-        return cursor.fetchone()
+async def sync_dc_page_image(db, doc_data: dict, document_id: int, page_number: int) -> int:
+    """Store a page record with a CDN URL (no image download). Returns page_id."""
+    # Build image URL from document metadata
+    asset_url = doc_data.get("asset_url", "")
+    slug = doc_data.get("slug", "")
+    img_url = page_image_url(asset_url, document_id, slug, page_number, size="large")
 
-    existing = await db.execute_write_fn(_check_existing)
-    if existing and existing[1] is not None:
-        return existing[0]
+    source = DocumentCloudSource()
+    return await source.store_page(db, document_id, page_number, image_url=img_url)
 
-    page_id = existing[0] if existing else None
 
-    # Fetch image from DocumentCloud
-    page_image_url: str = document.get_xlarge_image_url(page_number)
-    loop = asyncio.get_event_loop()
-    page_image = await loop.run_in_executor(
-        None,
-        lambda: httpx.get(page_image_url).content
-    )
+async def sync_documents(
+    datasette,
+    db,
+    sync_job_id: str,
+    document_ids: list[int],
+    page_type_model: str,
+    parser_model: str,
+    num_workers: int = DEFAULT_WORKERS,
+    token: str | None = None,
+):
+    """Import a list of DocumentCloud document IDs.
 
-    # Convert GIF to PNG for consistent storage
-    img = Image.open(BytesIO(page_image))
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    image_bytes = buf.getvalue()
+    For each document: fetch metadata, create document row, fetch page images,
+    create classify tasks, then run parallel workers.
+    """
 
-    def _store(conn):
-        if page_id is not None:
-            conn.execute(
-                "UPDATE pages SET image = ? WHERE id = ?",
-                (image_bytes, page_id)
+
+    reporter = DbProgressReporter(db, sync_job_id)
+    await reporter.report("info", f"Importing {len(document_ids)} document(s)...")
+
+    async with DocumentCloudClient(token=token) as client:
+        for dc_id in document_ids:
+            doc_resp = await client.get_document(dc_id)
+            doc_data = doc_resp
+
+            document_id = await sync_dc_document(db, doc_data)
+            page_count = doc_data.get("page_count", 0)
+            await reporter.report(
+                "info",
+                f"Syncing document {dc_id} ({page_count} pages)...",
             )
-            conn.commit()
-            return page_id
-        else:
-            cursor = conn.execute(
-                "INSERT INTO pages (document_id, page_number, image) VALUES (?, ?, ?)",
-                (document_id, page_number, image_bytes)
-            )
-            conn.commit()
-            return cursor.lastrowid
 
-    return await db.execute_write_fn(_store)
+            for page_idx in range(page_count):
+                await sync_dc_page_image(db, doc_data, document_id, page_idx + 1)
+
+            await create_classify_tasks(db, sync_job_id, document_id, page_type_model)
+
+    await reporter.report("info", "All pages synced, starting classification and parsing...")
+    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers)
+
+    summary = await get_job_summary(db, sync_job_id)
+    await reporter.report("success", summary)
 
 
 async def sync_project(
@@ -784,39 +778,49 @@ async def sync_project(
     page_type_model: str,
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
+    token: str | None = None,
 ):
     """Sync a DocumentCloud project to the database."""
-    await ensure_schema(db)
+
 
     reporter = DbProgressReporter(db, sync_job_id)
     await reporter.report("info", f"Starting sync for project {project_id}")
 
-    # Get project and documents
-    await reporter.report("info", "Fetching project from DocumentCloud...")
-    loop = asyncio.get_event_loop()
-    client = DocumentCloud()
-    project = await loop.run_in_executor(
-        None,
-        lambda: client.projects.get_by_id(project_id)
-    )
+    await reporter.report("info", "Fetching project documents from DocumentCloud...")
 
-    await reporter.report("info", f"Found {len(project.documents)} documents")
+    async with DocumentCloudClient(token=token) as client:
+        # Fetch all documents in the project via search pagination
+        all_docs: list[dict] = []
+        page = 1
+        while True:
+            result = await client.list_project_documents(project_id, page=page, per_page=100)
+            results = result.get("results", [])
+            if not results:
+                break
+            all_docs.extend(results)
+            if not result.get("next"):
+                break
+            page += 1
 
-    # Sync documents and pages (sequential — needs network I/O per page)
-    for document in project.documents:
-        document_id = await sync_document(db, document)
-        await reporter.report("info", f"Syncing document {document.id} ({document.page_count} pages)...")
+    await reporter.report("info", f"Found {len(all_docs)} documents")
 
-        for page_idx in range(document.page_count):
-            page_number = page_idx + 1
-            await sync_page_image(db, document, document_id, page_number)
+    # Use sync_documents for the actual import work
+    # But first store the document metadata we already fetched
+    for doc_data in all_docs:
+        await sync_dc_document(db, doc_data)
 
-        # Create classify tasks for this document
+    # Now sync page images and create tasks
+    for doc_data in all_docs:
+        document_id = doc_data["id"]
+        page_count = doc_data.get("page_count", 0)
+        await reporter.report("info", f"Syncing document {document_id} ({page_count} pages)...")
+
+        for page_idx in range(page_count):
+            await sync_dc_page_image(db, doc_data, document_id, page_idx + 1)
+
         await create_classify_tasks(db, sync_job_id, document_id, page_type_model)
 
     await reporter.report("info", "All pages synced, starting classification and parsing...")
-
-    # Run parallel workers for classify + parse
     await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers)
 
     summary = await get_job_summary(db, sync_job_id)
@@ -844,7 +848,7 @@ async def process_document(
     classify task completes, a parse task is automatically enqueued for that
     page (unless the page type is "unknown").
     """
-    await ensure_schema(db)
+
 
     if reporter is None:
         reporter = DbProgressReporter(db, sync_job_id)
@@ -861,7 +865,7 @@ async def process_document(
 
 
 # ---------------------------------------------------------------------------
-# Background wrappers — catch exceptions and update sync_jobs.status
+# Background wrappers — catch exceptions and update datasette_ca460_sync_jobs.status
 # ---------------------------------------------------------------------------
 
 async def run_process_document_in_background(
@@ -884,7 +888,7 @@ async def run_process_document_in_background(
 
         def _complete_job(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
                 (datetime.now().isoformat(), sync_job_id)
             )
             conn.commit()
@@ -897,7 +901,52 @@ async def run_process_document_in_background(
 
         def _fail_job(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
+                (datetime.now().isoformat(), error_msg_short, sync_job_id)
+            )
+            conn.commit()
+        await db.execute_write_fn(_fail_job)
+
+
+async def run_sync_documents_in_background(
+    datasette,
+    database_name: str,
+    sync_job_id: str,
+    document_ids: list[int],
+    page_type_model: str,
+    parser_model: str,
+    token: str | None = None,
+):
+    """Run document import in background, updating job status."""
+    db = datasette.get_database(database_name)
+
+    try:
+        await sync_documents(
+            datasette,
+            db,
+            sync_job_id,
+            document_ids,
+            page_type_model,
+            parser_model,
+            token=token,
+        )
+
+        def _complete_job(conn):
+            conn.execute(
+                "UPDATE datasette_ca460_sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), sync_job_id)
+            )
+            conn.commit()
+        await db.execute_write_fn(_complete_job)
+
+    except Exception as e:
+        error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+        error_msg_short = str(e)
+        await log_event(db, sync_job_id, "error", error_msg)
+
+        def _fail_job(conn):
+            conn.execute(
+                "UPDATE datasette_ca460_sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
                 (datetime.now().isoformat(), error_msg_short, sync_job_id)
             )
             conn.commit()
@@ -910,7 +959,8 @@ async def run_sync_in_background(
     sync_job_id: str,
     project_id: int,
     page_type_model: str,
-    parser_model: str
+    parser_model: str,
+    token: str | None = None,
 ):
     """Run sync in background, updating job status."""
     db = datasette.get_database(database_name)
@@ -922,13 +972,14 @@ async def run_sync_in_background(
             sync_job_id,
             project_id,
             page_type_model,
-            parser_model
+            parser_model,
+            token=token,
         )
 
         # Mark job as completed
         def _complete_job(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
                 (datetime.now().isoformat(), sync_job_id)
             )
             conn.commit()
@@ -943,7 +994,7 @@ async def run_sync_in_background(
 
         def _fail_job(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?",
                 (datetime.now().isoformat(), error_msg_short, sync_job_id)
             )
             conn.commit()

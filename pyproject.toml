@@ -12,7 +12,6 @@ requires-python = ">=3.10"
 dependencies = [
     "datasette>=1.0a23",
     "llm>=0.28",
-    "python-documentcloud>=4.5.0",
     "Pillow>=10.0",
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
@@ -22,6 +21,8 @@ dependencies = [
     "datasette-vite>=0.0.1a2",
     "pdf-lib-rs-py",
     "click",
+    "sqlite-migrate>=0.1b0",
+    "sqlite-utils>=3.38",
 ]
 
 [project.scripts]
@@ -52,8 +53,12 @@ ca460 = "datasette_ca460"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 
+[tool.ty.rules]
+unresolved-import = "ignore"  # optional deps (datasette_sidebar) behind try/except
+unresolved-attribute = "ignore"  # pdf_lib C extension + asyncio.TaskGroup false positive
+
 [tool.setuptools.package-data]
-datasette_ca460 = ["static/**/*", "templates/*", "manifest.json", "schema.sql"]
+datasette_ca460 = ["static/**/*", "templates/*", "manifest.json"]
 
 [tool.setuptools.packages.find]
 exclude = ["frontend"]

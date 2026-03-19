@@ -36,7 +36,7 @@ async def _process_document(
     # Create a sync job record
     def _create_job(conn):
         conn.execute(
-            "INSERT INTO sync_jobs (id, page_type_model, parser_model) VALUES (?, ?, ?)",
+            "INSERT INTO datasette_ca460_sync_jobs(id, page_type_model, parser_model) VALUES (?, ?, ?)",
             (sync_job_id, page_type_model, parser_model)
         )
         conn.commit()
@@ -54,7 +54,7 @@ async def _process_document(
     def _complete_job(conn):
         from datetime import datetime
         conn.execute(
-            "UPDATE sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+            "UPDATE datasette_ca460_sync_jobs SET status = 'completed', completed_at = ? WHERE id = ?",
             (datetime.now().isoformat(), sync_job_id)
         )
         conn.commit()

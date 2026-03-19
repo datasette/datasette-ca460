@@ -1,11 +1,13 @@
 from datasette import hookimpl
 from datasette.permissions import Action
 from datasette_vite import vite_entry
+from sqlite_utils import Database as SqliteUtilsDatabase
 import os
 
 # Import routes module to trigger route registration on the shared router
 from . import routes
 from .router import router, CA460_ACCESS_NAME
+from .migrations import migrations
 from .cli import ca460_cli
 
 try:
@@ -30,6 +32,16 @@ def extra_template_vars(datasette):
         vite_dev_path=os.environ.get("DATASETTE_CA460_VITE_PATH"),
     )
     return {"datasette_ca460_vite_entry": entry}
+
+
+@hookimpl
+async def startup(datasette):
+    def migrate(connection):
+        db = SqliteUtilsDatabase(connection)
+        migrations.apply(db)
+
+    for db_name in datasette.databases:
+        await datasette.get_database(db_name).execute_write_fn(migrate)
 
 
 @hookimpl
@@ -72,8 +84,8 @@ if _has_sidebar:
 
         return [
             SidebarApp(
-                label="CA Form 460",
-                description="Campaign finance filings",
+                label="CA Form 460 Parser",
+                description="California campaign finance",
                 href=href,
                 icon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
                 color="#0066cc",

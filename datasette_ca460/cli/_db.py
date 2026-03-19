@@ -1,13 +1,16 @@
 import sqlite3
 from pathlib import Path
 
-from ..sync import SCHEMA, extract_pdf_page_images
+from sqlite_utils import Database as SqliteUtilsDatabase
+
+from ..migrations import migrations
+from ..sync import extract_pdf_page_images
 
 
 def apply_schema(db_path: Path):
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(SCHEMA)
-    conn.close()
+    db = SqliteUtilsDatabase(str(db_path))
+    migrations.apply(db)
+    db.conn.close()
 
 
 def store_pdf(db_path: Path, pdf_bytes: bytes, filename: str) -> tuple[int, int]:
@@ -18,19 +21,19 @@ def store_pdf(db_path: Path, pdf_bytes: bytes, filename: str) -> tuple[int, int]
     cursor = conn.cursor()
 
     cursor.execute(
-        "INSERT INTO documents (source, page_count, data) VALUES (?, ?, ?)",
+        "INSERT INTO datasette_ca460_documents(source, page_count, data) VALUES (?, ?, ?) RETURNING id",
         ("upload", len(page_images), f'{{"title": "{filename}"}}'),
     )
-    document_id = cursor.lastrowid
+    document_id: int = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO document_files (document_id, filename, content) VALUES (?, ?, ?)",
+        "INSERT INTO datasette_ca460_document_files(document_id, filename, content) VALUES (?, ?, ?)",
         (document_id, filename, pdf_bytes),
     )
 
     for page_number, image_bytes in enumerate(page_images, start=1):
         cursor.execute(
-            "INSERT INTO pages (document_id, page_number, image) VALUES (?, ?, ?)",
+            "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?)",
             (document_id, page_number, image_bytes),
         )
 
@@ -43,7 +46,7 @@ def get_pages(db_path: Path, document_id: int) -> list[tuple[int, int]]:
     """Get (page_id, page_number) pairs for a document."""
     conn = sqlite3.connect(str(db_path))
     cursor = conn.execute(
-        "SELECT id, page_number FROM pages WHERE document_id = ? ORDER BY page_number",
+        "SELECT id, page_number FROM datasette_ca460_pages WHERE document_id = ? ORDER BY page_number",
         (document_id,),
     )
     rows = cursor.fetchall()

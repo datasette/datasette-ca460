@@ -6,14 +6,15 @@ from pydantic import BaseModel
 import json
 from .sync import (
     run_sync_in_background,
+    run_sync_documents_in_background,
     run_process_document_in_background,
     run_resume_in_background,
     upload_pdf,
-    ensure_schema,
     get_task_progress,
     reset_stale_tasks,
-    DEFAULT_WORKERS,
 )
+from .documentcloud import DocumentCloudClient, parse_documentcloud_url
+from .sources import get_source_for_document
 from .router import router, check_permission
 import asyncio
 import uuid
@@ -127,47 +128,47 @@ async def ca460_api_documents(request, datasette):
                 d.data->>'title' as title,
                 (
                     SELECT pp.parsed_data->>'committee_name'
-                    FROM page_parsed pp
-                    JOIN pages p ON pp.page_id = p.id
+                    FROM datasette_ca460_page_parsed pp
+                    JOIN datasette_ca460_pages p ON pp.page_id = p.id
                     WHERE p.document_id = d.id
                       AND pp.page_type IN ('cover-page-part-1', 'summary-page')
                     LIMIT 1
                 ) as filer_name,
                 (
                     SELECT pp.parsed_data->>'statement_covers_period_from'
-                    FROM page_parsed pp
-                    JOIN pages p ON pp.page_id = p.id
+                    FROM datasette_ca460_page_parsed pp
+                    JOIN datasette_ca460_pages p ON pp.page_id = p.id
                     WHERE p.document_id = d.id
                       AND pp.page_type IN ('cover-page-part-1', 'summary-page')
                     LIMIT 1
                 ) as period_from,
                 (
                     SELECT pp.parsed_data->>'statement_covers_period_through'
-                    FROM page_parsed pp
-                    JOIN pages p ON pp.page_id = p.id
+                    FROM datasette_ca460_page_parsed pp
+                    JOIN datasette_ca460_pages p ON pp.page_id = p.id
                     WHERE p.document_id = d.id
                       AND pp.page_type IN ('cover-page-part-1', 'summary-page')
                     LIMIT 1
                 ) as period_through,
                 (
                     SELECT COUNT(DISTINCT ptp.page_id)
-                    FROM pages p
-                    JOIN page_type_predictions ptp ON p.id = ptp.page_id
+                    FROM datasette_ca460_pages p
+                    JOIN datasette_ca460_page_type_predictions ptp ON p.id = ptp.page_id
                     WHERE p.document_id = d.id
                 ) as pages_classified,
                 (
                     SELECT COUNT(DISTINCT pp.page_id)
-                    FROM pages p
-                    JOIN page_parsed pp ON p.id = pp.page_id
+                    FROM datasette_ca460_pages p
+                    JOIN datasette_ca460_page_parsed pp ON p.id = pp.page_id
                     WHERE p.document_id = d.id
                 ) as pages_parsed,
                 (
                     SELECT COUNT(DISTINCT pp.model)
-                    FROM pages p
-                    JOIN page_parsed pp ON p.id = pp.page_id
+                    FROM datasette_ca460_pages p
+                    JOIN datasette_ca460_page_parsed pp ON p.id = pp.page_id
                     WHERE p.document_id = d.id
                 ) as model_count
-            FROM documents d
+            FROM datasette_ca460_documents d
             ORDER BY d.id DESC
         """)
         rows = cursor.fetchall()
@@ -211,7 +212,7 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
     def _get_data(conn):
         # Document info
         cursor = conn.execute(
-            "SELECT id, source, page_count, data FROM documents WHERE id = ?",
+            "SELECT id, source, page_count, data FROM datasette_ca460_documents WHERE id = ?",
             (document_id,)
         )
         doc_row = cursor.fetchone()
@@ -225,11 +226,11 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
             SELECT
                 p.id,
                 p.page_number,
-                (p.image IS NOT NULL) as has_image,
+                (p.image IS NOT NULL OR p.image_url IS NOT NULL) as has_image,
                 ptp.model as classification_model,
                 ptp.predicted_page_type
-            FROM pages p
-            LEFT JOIN page_type_predictions ptp ON p.id = ptp.page_id
+            FROM datasette_ca460_pages p
+            LEFT JOIN datasette_ca460_page_type_predictions ptp ON p.id = ptp.page_id
             WHERE p.document_id = ?
             ORDER BY p.page_number
         """, (document_id,))
@@ -254,8 +255,8 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
                 pp.parsed_data,
                 pp.timing,
                 pp.created_at
-            FROM page_parsed pp
-            JOIN pages p ON pp.page_id = p.id
+            FROM datasette_ca460_page_parsed pp
+            JOIN datasette_ca460_pages p ON pp.page_id = p.id
             WHERE p.document_id = ?
             ORDER BY pp.model, p.page_number
         """, (document_id,))
@@ -278,12 +279,13 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
                 "created_at": row[5],
             })
 
-        # Check if PDF file exists
+        # Check if PDF file exists (uploads) or if DC source (has PDF URL)
         cursor = conn.execute(
-            "SELECT filename FROM document_files WHERE document_id = ?",
+            "SELECT filename FROM datasette_ca460_document_files WHERE document_id = ?",
             (document_id,)
         )
         pdf_row = cursor.fetchone()
+        has_pdf = pdf_row is not None or doc_row[1] == "documentcloud"
 
         return {
             "document": {
@@ -291,11 +293,13 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
                 "source": doc_row[1],
                 "page_count": doc_row[2],
                 "title": doc_data.get("title", f"Document {doc_row[0]}"),
-                "has_pdf": pdf_row is not None,
+                "has_pdf": has_pdf,
                 "pdf_filename": pdf_row[0] if pdf_row else None,
             },
             "pages": pages,
             "models": models,
+            "_doc_data": doc_data,
+            "_source_type": doc_row[1],
         }
 
     try:
@@ -306,33 +310,43 @@ async def ca460_api_document_parsed(request, datasette, database: str, document_
     if data is None:
         return Response.json({"error": "Document not found"}, status=404)
 
+    # Add source-specific fields
+    from .sources import UploadSource, DocumentCloudSource
+    doc_data = data.pop("_doc_data")
+    source_type = data.pop("_source_type")
+    source = DocumentCloudSource() if source_type == "documentcloud" else UploadSource()
+
+    data["document"]["embed_url"] = source.embed_url(doc_data)
+    for page in data["pages"]:
+        page["thumbnail_url"] = source.thumbnail_url(doc_data, page["page_number"])
+
     return Response.json(data)
 
 
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/document/(?P<document_id>\d+)/page/(?P<page_number>\d+)/image$")
 @check_permission()
 async def ca460_api_page_image(request, datasette, database: str, document_id: str, page_number: str):
-    """Serve a page image as PNG."""
+    """Serve a page image as PNG, or redirect to CDN for DocumentCloud docs."""
     try:
         db = datasette.get_database(database)
     except KeyError:
         return Response.html("Not found", status=404)
 
-    def _get_image(conn):
-        cursor = conn.execute(
-            "SELECT image FROM pages WHERE document_id = ? AND page_number = ?",
-            (document_id, page_number)
-        )
-        row = cursor.fetchone()
-        return bytes(row[0]) if row and row[0] else None
+    source = await get_source_for_document(db, int(document_id))
+    data, content_type = await source.get_image_response_for_page(
+        db, int(document_id), int(page_number)
+    )
 
-    image_bytes = await db.execute_fn(_get_image)
-    if not image_bytes:
+    if data is None:
         return Response.html("Not found", status=404)
 
+    if content_type is None:
+        # data is a URL — redirect
+        return Response.redirect(data, status=302)
+
     return Response(
-        body=image_bytes,
-        content_type="image/png",
+        body=data,
+        content_type=content_type,
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
@@ -341,27 +355,24 @@ async def ca460_api_page_image(request, datasette, database: str, document_id: s
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/document/(?P<document_id>\d+)/pdf$")
 @check_permission()
 async def ca460_api_document_pdf(request, datasette, database: str, document_id: str):
-    """Serve the original PDF file."""
+    """Serve the original PDF file, or redirect to DC-hosted PDF."""
     try:
         db = datasette.get_database(database)
     except KeyError:
         return Response.html("Not found", status=404)
 
-    def _get_pdf(conn):
-        cursor = conn.execute(
-            "SELECT filename, content FROM document_files WHERE document_id = ?",
-            (document_id,)
-        )
-        row = cursor.fetchone()
-        return (row[0], bytes(row[1])) if row else None
+    source = await get_source_for_document(db, int(document_id))
+    data, filename = await source.get_pdf_response(db, int(document_id))
 
-    result = await db.execute_fn(_get_pdf)
-    if not result:
+    if data is None:
         return Response.html("Not found", status=404)
 
-    filename, pdf_bytes = result
+    if filename is None:
+        # data is a URL — redirect
+        return Response.redirect(data, status=302)
+
     return Response(
-        body=pdf_bytes,
+        body=data,
         content_type="application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="{filename}"',
@@ -390,7 +401,7 @@ async def ca460_events_view(request, datasette):
     def _get_data(conn):
         # Get job info
         cursor = conn.execute(
-            "SELECT status, error, started_at, completed_at FROM sync_jobs WHERE id = ?",
+            "SELECT status, error, started_at, completed_at FROM datasette_ca460_sync_jobs WHERE id = ?",
             (sync_job_id,)
         )
         job = cursor.fetchone()
@@ -400,7 +411,7 @@ async def ca460_events_view(request, datasette):
 
         # Get events
         cursor = conn.execute(
-            "SELECT event_type, message, created_at FROM sync_events WHERE sync_job_id = ? ORDER BY id",
+            "SELECT event_type, message, created_at FROM datasette_ca460_sync_events WHERE sync_job_id = ? ORDER BY id",
             (sync_job_id,)
         )
         events = cursor.fetchall()
@@ -451,14 +462,14 @@ async def ca460_api_sync(request, datasette, database: str, params: Annotated[Sy
     except KeyError:
         return Response.json({"error": "Database not found"}, status=404)
 
-    await ensure_schema(db)
+
 
     # Create sync job
     sync_job_id = str(uuid.uuid4())
 
     def _create_job(conn):
         conn.execute(
-            "INSERT INTO sync_jobs (id, project_id, page_type_model, parser_model) VALUES (?, ?, ?, ?)",
+            "INSERT INTO datasette_ca460_sync_jobs (id, project_id, page_type_model, parser_model) VALUES (?, ?, ?, ?)",
             (sync_job_id, params.project_id, params.page_type_model, params.parser_model)
         )
         conn.commit()
@@ -517,7 +528,7 @@ async def ca460_api_upload(request, datasette, database: str, body: Annotated[Up
 
     def _get_page_count(conn):
         cursor = conn.execute(
-            "SELECT page_count FROM documents WHERE id = ?", (document_id,)
+            "SELECT page_count FROM datasette_ca460_documents WHERE id = ?", (document_id,)
         )
         return cursor.fetchone()[0]
 
@@ -548,13 +559,13 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
     except KeyError:
         return Response.json({"error": "Database not found"}, status=404)
 
-    await ensure_schema(db)
+
 
     sync_job_id = str(uuid.uuid4())
 
     def _create_job(conn):
         conn.execute(
-            "INSERT INTO sync_jobs (id, page_type_model, parser_model) VALUES (?, ?, ?)",
+            "INSERT INTO datasette_ca460_sync_jobs (id, page_type_model, parser_model) VALUES (?, ?, ?)",
             (sync_job_id, params.page_type_model, params.parser_model)
         )
         conn.commit()
@@ -610,7 +621,7 @@ async def ca460_api_resume(request, datasette, database: str, params: Annotated[
     # Get the job's models
     def _get_job(conn):
         cursor = conn.execute(
-            "SELECT page_type_model, parser_model, status FROM sync_jobs WHERE id = ?",
+            "SELECT page_type_model, parser_model, status FROM datasette_ca460_sync_jobs WHERE id = ?",
             (params.sync_job_id,)
         )
         return cursor.fetchone()
@@ -628,7 +639,7 @@ async def ca460_api_resume(request, datasette, database: str, params: Annotated[
     if status != "running":
         def _reopen(conn):
             conn.execute(
-                "UPDATE sync_jobs SET status = 'running', completed_at = NULL, error = NULL WHERE id = ?",
+                "UPDATE datasette_ca460_sync_jobs SET status = 'running', completed_at = NULL, error = NULL WHERE id = ?",
                 (params.sync_job_id,)
             )
             conn.commit()
@@ -648,4 +659,127 @@ async def ca460_api_resume(request, datasette, database: str, params: Annotated[
         sync_job_id=params.sync_job_id,
         reset_count=reset_count,
     ).model_dump())
+
+
+# ---------------------------------------------------------------------------
+# DocumentCloud browsing / import endpoints
+# ---------------------------------------------------------------------------
+
+def _get_dc_token(datasette) -> str | None:
+    config = datasette.plugin_config("datasette-ca460") or {}
+    return config.get("documentcloud_token")
+
+
+class DcConfigOutput(BaseModel):
+    authenticated: bool
+
+@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/dc/config$", output=DcConfigOutput)
+@check_permission()
+async def ca460_api_dc_config(request, datasette, database: str):
+    """Return DocumentCloud integration config for the frontend."""
+    token = _get_dc_token(datasette)
+    return Response.json(DcConfigOutput(authenticated=token is not None).model_dump())
+
+
+@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/dc/search$")
+@check_permission()
+async def ca460_api_dc_search(request, datasette, database: str):
+    """Proxy search to DocumentCloud API."""
+    q = request.args.get("q", "")
+    page = int(request.args.get("page", "1"))
+    per_page = int(request.args.get("per_page", "25"))
+    ordering = request.args.get("ordering", "-created_at")
+
+    token = _get_dc_token(datasette)
+    async with DocumentCloudClient(token=token) as client:
+        result = await client.search(q, page=page, per_page=per_page, ordering=ordering)
+
+    return Response.json(result)
+
+
+@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/dc/document/(?P<dc_id>\d+)$")
+@check_permission()
+async def ca460_api_dc_document(request, datasette, database: str, dc_id: str):
+    """Return single document metadata from DocumentCloud."""
+    token = _get_dc_token(datasette)
+    async with DocumentCloudClient(token=token) as client:
+        result = await client.get_document(int(dc_id))
+    return Response.json(result)
+
+
+@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/dc/project/(?P<project_id>\d+)$")
+@check_permission()
+async def ca460_api_dc_project(request, datasette, database: str, project_id: str):
+    """Return project metadata + paginated document list."""
+    page = int(request.args.get("page", "1"))
+    per_page = int(request.args.get("per_page", "25"))
+
+    token = _get_dc_token(datasette)
+    async with DocumentCloudClient(token=token) as client:
+        project = await client.get_project(int(project_id))
+        docs = await client.list_project_documents(int(project_id), page=page, per_page=per_page)
+
+    return Response.json({"project": project, "documents": docs})
+
+
+class ResolveUrlRequest(BaseModel):
+    url: str
+
+class ResolveUrlOutput(BaseModel):
+    type: str
+    id: int
+
+@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/dc/resolve-url$", output=ResolveUrlOutput)
+@check_permission()
+async def ca460_api_dc_resolve_url(request, datasette, database: str, body: Annotated[ResolveUrlRequest, Body()]):
+    """Parse a DocumentCloud URL into type + ID."""
+    parsed = parse_documentcloud_url(body.url)
+    if parsed is None:
+        return Response.json({"error": "Unrecognised DocumentCloud URL"}, status=400)
+    return Response.json(parsed)
+
+
+class DcImportRequest(BaseModel):
+    document_ids: list[int]
+    page_type_model: str
+    parser_model: str
+
+class DcImportOutput(BaseModel):
+    sync_job_id: str
+
+@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/dc/import$", output=DcImportOutput)
+@check_permission()
+async def ca460_api_dc_import(request, datasette, database: str, body: Annotated[DcImportRequest, Body()]):
+    """Import selected DocumentCloud documents."""
+    try:
+        db = datasette.get_database(database)
+    except KeyError:
+        return Response.json({"error": "Database not found"}, status=404)
+
+
+
+    sync_job_id = str(uuid.uuid4())
+
+    def _create_job(conn):
+        conn.execute(
+            "INSERT INTO datasette_ca460_sync_jobs (id, page_type_model, parser_model) VALUES (?, ?, ?)",
+            (sync_job_id, body.page_type_model, body.parser_model)
+        )
+        conn.commit()
+    await db.execute_write_fn(_create_job)
+
+    token = _get_dc_token(datasette)
+    asyncio.create_task(
+        run_sync_documents_in_background(
+            datasette,
+            database,
+            sync_job_id,
+            body.document_ids,
+            body.page_type_model,
+            body.parser_model,
+            token=token,
+        )
+    )
+
+    return Response.json(DcImportOutput(sync_job_id=sync_job_id).model_dump())
 

@@ -28,6 +28,9 @@ format-frontend *flags:
 format-frontend-check *flags:
     npm run format:check --prefix frontend {{flags}}
 
+lint *flags:
+    uv run ruff check {{flags}}
+
 format-backend *flags:
     uv run ruff format {{flags}}
 
