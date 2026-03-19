@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Optional, Annotated
 from datasette_llm_accountant import LlmWrapper
 from datasette import Response
@@ -10,13 +9,14 @@ from .router import router, check_permission
 import asyncio
 import uuid
 
-async def _render_vite_entry(datasette, entrypoint: str, page_data: Optional[dict] = None) -> str:
+async def _render_vite_entry(datasette, request, entrypoint: str, page_data: Optional[dict] = None) -> str:
     return await datasette.render_template(
         "ca460_vite_entry.html",
         {
             "entry_name": entrypoint,
             "page_data": page_data,
-        }
+        },
+        request=request,
     )
 
 @router.GET(r"^/(?P<database>[^/]+)/-/ca460$")
@@ -33,7 +33,7 @@ async def ca460_index_view(request, datasette, database: str):
         )
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/index_view.ts", {"database": database})
+        await _render_vite_entry(datasette, request, "src/index_view.ts", {"database": database})
     )
 
 
@@ -49,7 +49,7 @@ async def ca460_document_view(request, datasette, database: str, document_id: st
         )
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/document_view.ts", {"database": database, "document_id": int(document_id)})
+        await _render_vite_entry(datasette, request, "src/document_view.ts", {"database": database, "document_id": int(document_id)})
     )
 
 
@@ -62,7 +62,7 @@ async def ca460_page_detail_view(request, datasette, database: str, document_id:
         return Response.html("Database not found", status=404)
 
     return Response.html(
-        await _render_vite_entry(datasette, "src/page_detail_view.ts", {"database": database, "document_id": int(document_id), "page_number": int(page_number)})
+        await _render_vite_entry(datasette, request, "src/page_detail_view.ts", {"database": database, "document_id": int(document_id), "page_number": int(page_number)})
     )
 
 
