@@ -18,3 +18,4 @@ tmp*
 
 datasette_ca460/static/gen
 datasette_ca460/manifest.json
+*.db
