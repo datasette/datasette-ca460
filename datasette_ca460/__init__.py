@@ -1,6 +1,7 @@
 from datasette import hookimpl
 from datasette.permissions import Action
 from datasette_vite import vite_entry
+from datasette_llm import Purpose
 from sqlite_utils import Database as SqliteUtilsDatabase
 import os
 
@@ -57,6 +58,20 @@ def register_actions(datasette):
 @hookimpl
 def register_commands(cli):
     cli.add_command(ca460_cli)
+
+
+@hookimpl
+def register_llm_purposes(datasette):
+    return [
+        Purpose(
+            name="ca460-classify",
+            description="Classify scanned Form 460 page images by page type",
+        ),
+        Purpose(
+            name="ca460-parse",
+            description="Extract structured data from classified Form 460 page images",
+        ),
+    ]
 
 
 @hookimpl

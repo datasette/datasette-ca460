@@ -16,7 +16,7 @@ dependencies = [
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
     "llm-gemini>=0.28.2",
-    "datasette-llm-accountant @ https://github.com/datasette/datasette-llm-accountant/archive/refs/heads/configurable-pricing.zip",
+    "datasette-llm>=0.1a2",
     "datasette-plugin-router>=0.0.1a2",
     "datasette-vite>=0.0.1a2",
     "pdf-lib-rs-py",
@@ -34,6 +34,7 @@ dev = [
     "pytest-asyncio",
     "ruff>=0.15.0",
 ]
+
 
 [build-system]
 requires = ["setuptools"]
@@ -53,9 +54,13 @@ ca460 = "datasette_ca460"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 
+[tool.ruff]
+exclude = ["example"]
+
 [tool.ty.rules]
 unresolved-import = "ignore"  # optional deps (datasette_sidebar) behind try/except
 unresolved-attribute = "ignore"  # pdf_lib C extension + asyncio.TaskGroup false positive
+invalid-argument-type = "ignore"  # llm library schema typing is too narrow for extract_ca460 types
 
 [tool.setuptools.package-data]
 datasette_ca460 = ["static/**/*", "templates/*", "manifest.json"]

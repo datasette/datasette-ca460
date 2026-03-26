@@ -1,9 +1,12 @@
 from typing import Optional, Annotated
-from datasette_llm_accountant import LlmWrapper
+from datasette_llm import LLM
 from datasette import Response
 from datasette_plugin_router import Body
 from pydantic import BaseModel
 import json
+import logging
+
+logger = logging.getLogger("datasette_ca460")
 from .sync import (
     run_sync_in_background,
     run_sync_documents_in_background,
@@ -18,6 +21,7 @@ from .sources import get_source_for_document
 from .router import router, check_permission
 import asyncio
 import uuid
+
 
 async def _render_vite_entry(datasette, request, entrypoint: str, page_data: Optional[dict] = None) -> str:
     return await datasette.render_template(
@@ -87,8 +91,8 @@ async def ca460_api_models(request, datasette):
     except KeyError:
         return Response.json({"error": "Database not found"}, status=404)
 
-    llm_wrapper = LlmWrapper(datasette)
-    available_models = list(map(lambda x: x.model_id, llm_wrapper.get_async_models()))
+    ds_llm = LLM(datasette)
+    available_models = [m.model_id for m in await ds_llm.models()]
 
     return Response.json({"models": available_models})
 
@@ -484,7 +488,8 @@ async def ca460_api_sync(request, datasette, database: str, params: Annotated[Sy
             sync_job_id,
             params.project_id,
             params.page_type_model,
-            params.parser_model
+            params.parser_model,
+            actor=request.actor,
         )
     )
 
@@ -580,6 +585,7 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
             params.document_id,
             params.page_type_model,
             params.parser_model,
+            actor=request.actor,
         )
     )
 
@@ -652,6 +658,7 @@ async def ca460_api_resume(request, datasette, database: str, params: Annotated[
             database,
             params.sync_job_id,
             parser_model,
+            actor=request.actor,
         )
     )
 
@@ -778,6 +785,7 @@ async def ca460_api_dc_import(request, datasette, database: str, body: Annotated
             body.page_type_model,
             body.parser_model,
             token=token,
+            actor=request.actor,
         )
     )
 

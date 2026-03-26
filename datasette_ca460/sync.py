@@ -69,7 +69,6 @@ import json
 import time
 from io import BytesIO
 from PIL import Image
-from datasette_llm_accountant import LlmWrapper
 import asyncio
 from contextlib import contextmanager
 from .documentcloud import DocumentCloudClient, page_image_url
@@ -79,6 +78,7 @@ from typing import Protocol
 import traceback
 import llm
 import pdf_lib
+from datasette_llm import LLM
 
 from extract_ca460 import PageClassification, CLASSIFIER_PROMPT, PAGE_TYPES
 
@@ -204,7 +204,8 @@ async def predict_page_type(
     datasette,
     db,
     page_id: int,
-    page_type_model: str
+    page_type_model: str,
+    actor: dict | None = None,
 ) -> str:
     """Predict page type if not already predicted with this model. Returns predicted page type."""
     # Check if already predicted
@@ -224,9 +225,8 @@ async def predict_page_type(
     cropped_page_image = crop_page_image_for_prediction(page_image)
     cropped_page_jpeg = to_jpeg(cropped_page_image, quality=95)
 
-    # Make prediction using LlmWrapper
-    llm_wrapper = LlmWrapper(datasette)
-    model = llm_wrapper.get_async_model(page_type_model)
+    ds_llm = LLM(datasette)
+    model = await ds_llm.model(page_type_model, purpose="ca460-classify", actor=actor)
     with timer() as get_elapsed:
         response = await model.prompt(
             CLASSIFIER_PROMPT,
@@ -270,7 +270,8 @@ async def parse_page(
     db,
     page_id: int,
     page_type: str,
-    parser_model: str
+    parser_model: str,
+    actor: dict | None = None,
 ) -> None:
     """Parse a page of a given type if not already parsed with this model."""
     prompt, schema = PAGE_TYPES[page_type]
@@ -278,9 +279,8 @@ async def parse_page(
     page_image = await get_page_image(db, page_id)
     page_jpeg = to_jpeg(page_image, quality=95)
 
-    # Parse the page using LlmWrapper
-    llm_wrapper = LlmWrapper(datasette)
-    model = llm_wrapper.get_async_model(parser_model)
+    ds_llm = LLM(datasette)
+    model = await ds_llm.model(parser_model, purpose="ca460-parse", actor=actor)
     with timer() as get_elapsed:
         response = await model.prompt(
             prompt,
@@ -506,6 +506,7 @@ async def worker(
     parser_model: str,
     reporter: ProgressReporter,
     worker_id: int,
+    actor: dict | None = None,
 ):
     """A single worker that claims and executes tasks from the queue.
 
@@ -529,7 +530,7 @@ async def worker(
         try:
             if task_type == "classify":
                 predicted = await predict_page_type(
-                    datasette, db, page_id, task["model"]
+                    datasette, db, page_id, task["model"], actor=actor
                 )
                 await complete_task(db, task_id)
                 await reporter.report(
@@ -544,7 +545,7 @@ async def worker(
             elif task_type == "parse":
                 page_type = task["page_type"]
                 await parse_page(
-                    datasette, db, page_id, page_type, task["model"]
+                    datasette, db, page_id, page_type, task["model"], actor=actor
                 )
                 await complete_task(db, task_id)
                 await reporter.report(
@@ -566,6 +567,7 @@ async def run_workers(
     parser_model: str,
     reporter: ProgressReporter,
     num_workers: int = DEFAULT_WORKERS,
+    actor: dict | None = None,
 ):
     """Run N workers in parallel to process the task queue."""
     # Reset any stale tasks from a previous crashed run
@@ -576,7 +578,7 @@ async def run_workers(
     async with asyncio.TaskGroup() as tg:
         for i in range(num_workers):
             tg.create_task(
-                worker(datasette, db, sync_job_id, parser_model, reporter, i)
+                worker(datasette, db, sync_job_id, parser_model, reporter, i, actor=actor)
             )
 
 
@@ -602,6 +604,7 @@ async def resume_job(
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
     reporter: ProgressReporter | None = None,
+    actor: dict | None = None,
 ):
     """Resume a stalled job by running workers against existing tasks."""
     if reporter is None:
@@ -612,7 +615,7 @@ async def resume_job(
         await reporter.report("info", f"Reset {reset_count} stale tasks")
 
     await reporter.report("info", f"Resuming with {num_workers} workers...")
-    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers)
+    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers, actor=actor)
 
     summary = await get_job_summary(db, sync_job_id)
     await reporter.report("success", summary)
@@ -624,12 +627,13 @@ async def run_resume_in_background(
     sync_job_id: str,
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
+    actor: dict | None = None,
 ):
     """Run job resume in background, updating job status."""
     db = datasette.get_database(database_name)
 
     try:
-        await resume_job(datasette, db, sync_job_id, parser_model, num_workers)
+        await resume_job(datasette, db, sync_job_id, parser_model, num_workers, actor=actor)
 
         def _complete_job(conn):
             conn.execute(
@@ -735,6 +739,7 @@ async def sync_documents(
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
     token: str | None = None,
+    actor: dict | None = None,
 ):
     """Import a list of DocumentCloud document IDs.
 
@@ -764,7 +769,7 @@ async def sync_documents(
             await create_classify_tasks(db, sync_job_id, document_id, page_type_model)
 
     await reporter.report("info", "All pages synced, starting classification and parsing...")
-    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers)
+    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers, actor=actor)
 
     summary = await get_job_summary(db, sync_job_id)
     await reporter.report("success", summary)
@@ -779,6 +784,7 @@ async def sync_project(
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
     token: str | None = None,
+    actor: dict | None = None,
 ):
     """Sync a DocumentCloud project to the database."""
 
@@ -821,7 +827,7 @@ async def sync_project(
         await create_classify_tasks(db, sync_job_id, document_id, page_type_model)
 
     await reporter.report("info", "All pages synced, starting classification and parsing...")
-    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers)
+    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers, actor=actor)
 
     summary = await get_job_summary(db, sync_job_id)
     await reporter.report("success", summary)
@@ -840,6 +846,7 @@ async def process_document(
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
     reporter: ProgressReporter | None = None,
+    actor: dict | None = None,
 ):
     """Classify and parse all pages of a document using parallel workers.
 
@@ -858,7 +865,7 @@ async def process_document(
     await reporter.report("info", f"Processing {page_count} pages with {num_workers} workers...")
 
     # Run workers — they'll classify pages and auto-create parse tasks
-    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers)
+    await run_workers(datasette, db, sync_job_id, parser_model, reporter, num_workers, actor=actor)
 
     summary = await get_job_summary(db, sync_job_id)
     await reporter.report("success", summary)
@@ -876,6 +883,7 @@ async def run_process_document_in_background(
     page_type_model: str,
     parser_model: str,
     num_workers: int = DEFAULT_WORKERS,
+    actor: dict | None = None,
 ):
     """Run document processing in background, updating job status."""
     db = datasette.get_database(database_name)
@@ -883,7 +891,7 @@ async def run_process_document_in_background(
     try:
         await process_document(
             datasette, db, sync_job_id, document_id,
-            page_type_model, parser_model, num_workers,
+            page_type_model, parser_model, num_workers, actor=actor,
         )
 
         def _complete_job(conn):
@@ -916,6 +924,7 @@ async def run_sync_documents_in_background(
     page_type_model: str,
     parser_model: str,
     token: str | None = None,
+    actor: dict | None = None,
 ):
     """Run document import in background, updating job status."""
     db = datasette.get_database(database_name)
@@ -929,6 +938,7 @@ async def run_sync_documents_in_background(
             page_type_model,
             parser_model,
             token=token,
+            actor=actor,
         )
 
         def _complete_job(conn):
@@ -961,6 +971,7 @@ async def run_sync_in_background(
     page_type_model: str,
     parser_model: str,
     token: str | None = None,
+    actor: dict | None = None,
 ):
     """Run sync in background, updating job status."""
     db = datasette.get_database(database_name)
@@ -974,6 +985,7 @@ async def run_sync_in_background(
             page_type_model,
             parser_model,
             token=token,
+            actor=actor,
         )
 
         # Mark job as completed
