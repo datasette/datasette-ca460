@@ -58,12 +58,17 @@ check:
 
 # Development servers
 dev *flags:
+    mkdir -p example/fs
     DATASETTE_SECRET=abc123 uv run \
       --with datasette-debug-gotham \
       --with datasette-sidebar \
       datasette \
         -s permissions.ca460_access.id "*" \
         -s permissions.datasette-sidebar-access.id "*" \
+        -s permissions.files-browse.id "*" \
+        -s permissions.files-upload.id "*" \
+        -s plugins.datasette-files.sources.ca460.storage filesystem \
+        -s plugins.datasette-files.sources.ca460.config.root example/fs \
         tmp.db \
         --plugins-dir example \
         {{flags}}

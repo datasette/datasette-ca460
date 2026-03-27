@@ -22,12 +22,12 @@ class DocumentSource(ABC):
     # --- Page images ---
 
     @abstractmethod
-    async def get_page_image_bytes(self, db, page_id: int) -> bytes:
+    async def get_page_image_bytes(self, db, page_id: int, *, datasette=None) -> bytes:
         """Raw image bytes for LLM processing."""
 
     @abstractmethod
     async def get_image_response_for_page(
-        self, db, document_id: int, page_number: int
+        self, db, document_id: int, page_number: int, *, datasette=None
     ) -> tuple:
         """Returns (bytes, content_type) for blobs, or (url, None) to signal redirect."""
 
@@ -42,7 +42,7 @@ class DocumentSource(ABC):
         """Number of pages in the document."""
 
     @abstractmethod
-    async def get_pdf_response(self, db, document_id: int) -> tuple:
+    async def get_pdf_response(self, db, document_id: int, *, datasette=None) -> tuple:
         """Returns (bytes, filename) for blob, or (url, None) for redirect."""
 
     @abstractmethod
@@ -52,25 +52,30 @@ class DocumentSource(ABC):
     # --- Storage ---
 
     @abstractmethod
-    async def store_page(self, db, document_id: int, page_number: int, **kwargs) -> int:
+    async def store_page(
+        self, db, document_id: int, page_number: int, *, datasette=None, **kwargs
+    ) -> int:
         """Store a page record. Returns page_id."""
 
 
 class UploadSource(DocumentSource):
-    """Source for uploaded PDF documents — images stored as blobs."""
+    """Source for uploaded PDF documents — page images stored as blobs."""
 
-    async def get_page_image_bytes(self, db, page_id: int) -> bytes:
+    async def get_page_image_bytes(self, db, page_id: int, *, datasette=None) -> bytes:
         def _get(conn):
-            cursor = conn.execute("SELECT image FROM datasette_ca460_pages WHERE id = ?", (page_id,))
+            cursor = conn.execute(
+                "SELECT image FROM datasette_ca460_pages WHERE id = ?",
+                (page_id,),
+            )
             row = cursor.fetchone()
             if not row or not row[0]:
-                raise ValueError(f"No image stored for page {page_id}")
-            return bytes(row[0])
+                raise ValueError(f"No image for page {page_id}")
+            return row[0]
 
         return await db.execute_write_fn(_get)
 
     async def get_image_response_for_page(
-        self, db, document_id: int, page_number: int
+        self, db, document_id: int, page_number: int, *, datasette=None
     ) -> tuple:
         def _get(conn):
             cursor = conn.execute(
@@ -78,12 +83,12 @@ class UploadSource(DocumentSource):
                 (document_id, page_number),
             )
             row = cursor.fetchone()
-            return bytes(row[0]) if row and row[0] else None
+            return row[0] if row else None
 
-        image_bytes = await db.execute_write_fn(_get)
-        if not image_bytes:
+        image = await db.execute_write_fn(_get)
+        if not image:
             return (None, None)
-        return (image_bytes, "image/png")
+        return (image, "image/png")
 
     def thumbnail_url(self, doc_data: dict, page_number: int) -> str | None:
         return None
@@ -91,28 +96,35 @@ class UploadSource(DocumentSource):
     async def get_page_count(self, db, document_id: int) -> int:
         def _get(conn):
             cursor = conn.execute(
-                "SELECT page_count FROM datasette_ca460_documents WHERE id = ?", (document_id,)
+                "SELECT page_count FROM datasette_ca460_documents WHERE id = ?",
+                (document_id,),
             )
             row = cursor.fetchone()
             return row[0] if row else 0
 
         return await db.execute_write_fn(_get)
 
-    async def get_pdf_response(self, db, document_id: int) -> tuple:
+    async def get_pdf_response(self, db, document_id: int, *, datasette=None) -> tuple:
         def _get(conn):
             cursor = conn.execute(
-                "SELECT filename, content FROM datasette_ca460_document_files WHERE document_id = ?",
+                "SELECT filename, file_id FROM datasette_ca460_document_files WHERE document_id = ?",
                 (document_id,),
             )
             row = cursor.fetchone()
-            return (bytes(row[1]), row[0]) if row else (None, None)
+            return (row[0], row[1]) if row else (None, None)
 
-        return await db.execute_write_fn(_get)
+        filename, file_id = await db.execute_write_fn(_get)
+        if not file_id:
+            return (None, None)
+        # Signal redirect to datasette-files download URL
+        return (f"/-/files/{file_id}/download", None)
 
     def embed_url(self, doc_data: dict) -> str | None:
         return None
 
-    async def store_page(self, db, document_id: int, page_number: int, **kwargs) -> int:
+    async def store_page(
+        self, db, document_id: int, page_number: int, *, datasette=None, **kwargs
+    ) -> int:
         image = kwargs.get("image")
 
         def _store(conn):
@@ -130,22 +142,19 @@ class UploadSource(DocumentSource):
 class DocumentCloudSource(DocumentSource):
     """Source for DocumentCloud documents — images served via CDN redirect."""
 
-    async def get_page_image_bytes(self, db, page_id: int) -> bytes:
+    async def get_page_image_bytes(self, db, page_id: int, *, datasette=None) -> bytes:
         """Fetch image bytes for LLM processing. Tries blob first, then CDN URL."""
 
         def _get(conn):
             cursor = conn.execute(
-                "SELECT image, image_url FROM datasette_ca460_pages WHERE id = ?", (page_id,)
+                "SELECT image_url FROM datasette_ca460_pages WHERE id = ?", (page_id,)
             )
             row = cursor.fetchone()
             if not row:
                 raise ValueError(f"No page found with id {page_id}")
-            return (row[0], row[1])
+            return row[0]
 
-        blob, url = await db.execute_write_fn(_get)
-
-        if blob:
-            return bytes(blob)
+        url = await db.execute_write_fn(_get)
 
         if not url:
             raise ValueError(f"No image data for page {page_id}")
@@ -162,26 +171,22 @@ class DocumentCloudSource(DocumentSource):
         return buf.getvalue()
 
     async def get_image_response_for_page(
-        self, db, document_id: int, page_number: int
+        self, db, document_id: int, page_number: int, *, datasette=None
     ) -> tuple:
-        """Returns (url, None) for redirect; falls back to blob."""
+        """Returns (url, None) for redirect."""
 
         def _get(conn):
             cursor = conn.execute(
-                "SELECT image, image_url FROM datasette_ca460_pages WHERE document_id = ? AND page_number = ?",
+                "SELECT image_url FROM datasette_ca460_pages WHERE document_id = ? AND page_number = ?",
                 (document_id, page_number),
             )
             row = cursor.fetchone()
-            if not row:
-                return (None, None)
-            return (row[0], row[1])
+            return row[0] if row else None
 
-        blob, url = await db.execute_write_fn(_get)
+        url = await db.execute_write_fn(_get)
 
         if url:
             return (url, None)  # signal redirect
-        if blob:
-            return (bytes(blob), "image/png")
         return (None, None)
 
     def thumbnail_url(self, doc_data: dict, page_number: int) -> str | None:
@@ -195,19 +200,21 @@ class DocumentCloudSource(DocumentSource):
     async def get_page_count(self, db, document_id: int) -> int:
         def _get(conn):
             cursor = conn.execute(
-                "SELECT page_count FROM datasette_ca460_documents WHERE id = ?", (document_id,)
+                "SELECT page_count FROM datasette_ca460_documents WHERE id = ?",
+                (document_id,),
             )
             row = cursor.fetchone()
             return row[0] if row else 0
 
         return await db.execute_write_fn(_get)
 
-    async def get_pdf_response(self, db, document_id: int) -> tuple:
+    async def get_pdf_response(self, db, document_id: int, *, datasette=None) -> tuple:
         """Return (url, None) for redirect to DC-hosted PDF."""
 
         def _get(conn):
             cursor = conn.execute(
-                "SELECT data FROM datasette_ca460_documents WHERE id = ?", (document_id,)
+                "SELECT data FROM datasette_ca460_documents WHERE id = ?",
+                (document_id,),
             )
             row = cursor.fetchone()
             return row[0] if row else None
@@ -232,7 +239,9 @@ class DocumentCloudSource(DocumentSource):
             return None
         return f"https://www.documentcloud.org/documents/{doc_id}"
 
-    async def store_page(self, db, document_id: int, page_number: int, **kwargs) -> int:
+    async def store_page(
+        self, db, document_id: int, page_number: int, *, datasette=None, **kwargs
+    ) -> int:
         image_url = kwargs.get("image_url")
 
         def _store(conn):
@@ -271,7 +280,8 @@ _SOURCES = {
 async def get_source_for_document(db, document_id: int) -> DocumentSource:
     def _get(conn):
         cursor = conn.execute(
-            "SELECT source FROM datasette_ca460_documents WHERE id = ?", (document_id,)
+            "SELECT source FROM datasette_ca460_documents WHERE id = ?",
+            (document_id,),
         )
         row = cursor.fetchone()
         return row[0] if row else None

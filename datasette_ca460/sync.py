@@ -72,7 +72,8 @@ from PIL import Image
 import asyncio
 from contextlib import contextmanager
 from .documentcloud import DocumentCloudClient, page_image_url
-from .sources import get_source_for_page, DocumentCloudSource
+from .sources import get_source_for_page, DocumentCloudSource, UploadSource
+
 from datetime import datetime, timedelta
 from typing import Protocol
 import traceback
@@ -190,10 +191,10 @@ async def log_event(db, sync_job_id: str, event_type: str, message: str):
     await db.execute_write_fn(_log)
 
 
-async def get_page_image(db, page_id: int) -> bytes:
+async def get_page_image(db, page_id: int, *, datasette=None) -> bytes:
     """Get image bytes for a page via its document source."""
     source = await get_source_for_page(db, page_id)
-    return await source.get_page_image_bytes(db, page_id)
+    return await source.get_page_image_bytes(db, page_id, datasette=datasette)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +222,7 @@ async def predict_page_type(
     if existing:
         return existing
 
-    page_image = await get_page_image(db, page_id)
+    page_image = await get_page_image(db, page_id, datasette=datasette)
     cropped_page_image = crop_page_image_for_prediction(page_image)
     cropped_page_jpeg = to_jpeg(cropped_page_image, quality=95)
 
@@ -276,7 +277,7 @@ async def parse_page(
     """Parse a page of a given type if not already parsed with this model."""
     prompt, schema = PAGE_TYPES[page_type]
 
-    page_image = await get_page_image(db, page_id)
+    page_image = await get_page_image(db, page_id, datasette=datasette)
     page_jpeg = to_jpeg(page_image, quality=95)
 
     ds_llm = LLM(datasette)
@@ -661,35 +662,43 @@ async def run_resume_in_background(
 # Upload flow
 # ---------------------------------------------------------------------------
 
-async def upload_pdf(db, pdf_bytes: bytes, filename: str) -> int:
-    """Upload a PDF, extract page images, store everything. Returns document_id."""
+async def process_uploaded_file(datasette, db, file_id: str) -> int:
+    """Process a PDF already uploaded to datasette-files.
 
+    Reads the PDF from datasette-files, extracts page images, stores each
+    page image as a blob in the database. Returns document_id.
+    """
+    from .files_storage import read_from_datasette_files, get_file_metadata
+
+    pdf_bytes = await read_from_datasette_files(datasette, file_id)
+    file_meta = await get_file_metadata(datasette, file_id)
+    filename = file_meta.get("filename", "upload.pdf")
 
     loop = asyncio.get_event_loop()
     page_images = await loop.run_in_executor(None, extract_pdf_page_images, pdf_bytes)
 
-    def _store(conn):
+    # Create document record
+    def _create_doc(conn):
         cursor = conn.execute(
             "INSERT INTO datasette_ca460_documents(source, page_count, data) VALUES (?, ?, ?) RETURNING id",
             ("upload", len(page_images), json.dumps({"title": filename}))
         )
         document_id = cursor.fetchone()[0]
-
         conn.execute(
-            "INSERT INTO datasette_ca460_document_files (document_id, filename, content) VALUES (?, ?, ?)",
-            (document_id, filename, pdf_bytes)
+            "INSERT INTO datasette_ca460_document_files (document_id, filename, file_id) VALUES (?, ?, ?)",
+            (document_id, filename, file_id)
         )
-
-        for page_number, image_bytes in enumerate(page_images, start=1):
-            conn.execute(
-                "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?)",
-                (document_id, page_number, image_bytes)
-            )
-
         conn.commit()
         return document_id
 
-    return await db.execute_write_fn(_store)
+    document_id = await db.execute_write_fn(_create_doc)
+
+    # Store each page image as a blob
+    source = UploadSource()
+    for page_number, image_bytes in enumerate(page_images, start=1):
+        await source.store_page(db, document_id, page_number, image=image_bytes)
+
+    return document_id
 
 
 # ---------------------------------------------------------------------------

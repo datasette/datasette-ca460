@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { models as fetchModels, uploadPdf, processDocument, syncEvents } from './api';
+  import { models as fetchModels, processDocument, syncEvents } from './api';
   import DocumentCloudBrowser from './DocumentCloudBrowser.svelte';
+
+  import { ensureFilePickerLoaded } from './datasette-files';
 
   interface Props {
     database: string;
@@ -24,9 +26,9 @@
   let error: string | null = $state(null);
 
   // Upload
-  let selectedFile: File | null = $state(null);
-  let dragging = $state(false);
-  let uploading = $state(false);
+  let selectedFileId: string | null = $state(null);
+  let selectedFileName: string | null = $state(null);
+  let processing = $state(false);
 
   // DocumentCloud sync progress (shared between DC browser import and legacy)
   let syncJobId: string | null = $state(null);
@@ -61,58 +63,44 @@
     finally { loadingModels = false; }
   }
 
-  // --- Upload ---
+  // --- File picker ---
 
-  function handleDragOver(e: DragEvent) { e.preventDefault(); dragging = true; }
-  function handleDragLeave(e: DragEvent) { e.preventDefault(); dragging = false; }
-
-  function handleDrop(e: DragEvent) {
-    e.preventDefault();
-    dragging = false;
-    const file = e.dataTransfer?.files?.[0];
-    if (file && (file.type === 'application/pdf' || file.name.endsWith('.pdf'))) {
-      selectedFile = file; error = null;
-    } else {
-      error = 'Please drop a PDF file';
-    }
+  function openFilePicker() {
+    ensureFilePickerLoaded();
+    const picker = document.createElement('datasette-file-picker');
+    picker.addEventListener('file-selected', (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.fileId) {
+        selectedFileId = detail.fileId;
+        selectedFileName = detail.fileId;
+        error = null;
+      }
+    });
+    document.body.appendChild(picker);
   }
 
-  function handleFileInput(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (input.files?.[0]) { selectedFile = input.files[0]; error = null; }
-  }
+  function clearFile() { selectedFileId = null; selectedFileName = null; error = null; }
 
-  function clearFile() { selectedFile = null; error = null; }
-
-  function formatFileSize(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  async function handleUpload() {
-    if (!selectedFile) return;
-    uploading = true;
+  async function handleProcess() {
+    if (!selectedFileId) return;
+    processing = true;
     error = null;
 
     try {
-      const { data, error: uploadErr } = await uploadPdf(database, selectedFile);
-      if (uploadErr || !data) { error = (uploadErr as any)?.error || 'Upload failed'; return; }
-
-      const { data: processData, error: processErr } = await processDocument(database, {
-        document_id: data.document_id,
+      const { data, error: processErr } = await processDocument(database, {
+        file_id: selectedFileId,
         page_type_model: pageTypeModel,
         parser_model: parserModel,
       });
 
-      if (processErr || !processData) { error = 'Uploaded but failed to start processing'; return; }
+      if (processErr || !data) { error = (processErr as any)?.error || 'Processing failed'; return; }
 
-      const jobId = (processData as any).sync_job_id;
-      window.location.href = `/${database}/-/ca460/document/${data.document_id}?sync_job_id=${jobId}`;
+      const d = data as any;
+      window.location.href = `/${database}/-/ca460/document/${d.document_id}?sync_job_id=${d.sync_job_id}`;
     } catch (e) {
-      error = 'Upload failed';
+      error = 'Processing failed';
     } finally {
-      uploading = false;
+      processing = false;
     }
   }
 
@@ -158,7 +146,7 @@
     </div>
 
     <div class="tabs">
-      <button class="tab" class:active={activeTab === 'upload'} onclick={() => activeTab = 'upload'}>Upload PDF</button>
+      <button class="tab" class:active={activeTab === 'upload'} onclick={() => activeTab = 'upload'}>Pick File</button>
       <button class="tab" class:active={activeTab === 'documentcloud'} onclick={() => activeTab = 'documentcloud'}>DocumentCloud</button>
     </div>
 
@@ -167,30 +155,19 @@
         <div class="error-msg">{error}</div>
       {/if}
 
-      <div
-        class="drop-zone"
-        class:drop-zone-active={dragging}
-        class:drop-zone-has-file={selectedFile !== null}
-        role="button"
-        tabindex="0"
-        ondragover={handleDragOver}
-        ondragleave={handleDragLeave}
-        ondrop={handleDrop}
-        onclick={() => document.getElementById('upload-file-input')?.click()}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') document.getElementById('upload-file-input')?.click(); }}
-      >
-        <input type="file" id="upload-file-input" accept=".pdf,application/pdf" onchange={handleFileInput} hidden />
-        {#if selectedFile}
+      {#if !selectedFileId}
+        <div class="picker-container">
+          <button class="btn-primary" onclick={openFilePicker}>Select or upload a PDF</button>
+        </div>
+      {:else}
+        <div class="selected-file">
           <div class="file-info">
-            <strong>{selectedFile.name}</strong>
-            <span class="file-size">{formatFileSize(selectedFile.size)}</span>
+            <strong>{selectedFileName}</strong>
+            <span class="file-id">{selectedFileId}</span>
           </div>
-        {:else}
-          <p class="drop-prompt">Drop a PDF here or click to select</p>
-        {/if}
-      </div>
+          <button class="btn-secondary btn-sm" onclick={clearFile}>Change</button>
+        </div>
 
-      {#if selectedFile}
         <div class="model-row">
           <div class="model-field">
             <label for="upload-ptm">Classifier:</label>
@@ -207,10 +184,10 @@
         </div>
 
         <div class="actions">
-          <button class="btn-primary" onclick={handleUpload} disabled={uploading || loadingModels}>
-            {uploading ? 'Uploading...' : 'Upload & Process'}
+          <button class="btn-primary" onclick={handleProcess} disabled={processing || loadingModels}>
+            {processing ? 'Processing...' : 'Process Document'}
           </button>
-          <button class="btn-secondary" onclick={clearFile} disabled={uploading}>Clear</button>
+          <button class="btn-secondary" onclick={clearFile} disabled={processing}>Clear</button>
         </div>
       {/if}
 
@@ -276,13 +253,12 @@
 
   .error-msg { padding: 0.6em 0.8em; background: #fee2e2; color: #991b1b; border-radius: 6px; margin-bottom: 1em; font-size: 0.9em; }
 
-  .drop-zone { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 2em; text-align: center; cursor: pointer; transition: all 0.15s; }
-  .drop-zone:hover { border-color: #94a3b8; background: #f8fafc; }
-  .drop-zone-active { border-color: #0066cc; background: #e8f0fe; }
-  .drop-zone-has-file { border-style: solid; border-color: #059669; background: #f0fdf4; }
-  .drop-prompt { margin: 0; color: #94a3b8; }
-  .file-info { display: flex; flex-direction: column; gap: 0.2em; }
-  .file-size { font-size: 0.85em; color: #64748b; }
+  .picker-container { margin-top: 0.5em; }
+  .picker-hint { color: #64748b; font-size: 0.9em; margin: 0 0 0.75em 0; }
+
+  .selected-file { display: flex; align-items: center; justify-content: space-between; padding: 0.75em 1em; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; }
+  .file-info { display: flex; flex-direction: column; gap: 0.1em; }
+  .file-id { font-size: 0.8em; color: #64748b; font-family: monospace; }
 
   .model-row { display: flex; gap: 1em; margin-top: 1.25em; }
   .dc-models { margin-top: 0; margin-bottom: 1em; }
@@ -296,6 +272,7 @@
   .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-secondary { padding: 0.6em 1.2em; background: #f1f5f9; color: #475569; border: 1px solid #d1d5db; border-radius: 6px; cursor: pointer; font-size: 0.9em; }
   .btn-secondary:hover:not(:disabled) { background: #e2e8f0; }
+  .btn-sm { padding: 0.3em 0.7em; font-size: 0.82em; }
 
   .sync-progress { margin-top: 0.5em; }
   .sync-status { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; font-size: 0.9em; }

@@ -46,31 +46,9 @@ export async function documentParsed(database: string, documentId: string) {
   });
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      resolve(dataUrl.split(",")[1]);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-export async function uploadPdf(database: string, file: File) {
-  const file_data = await readFileAsBase64(file);
-  return client.POST("/{database}/-/ca460/api/upload", {
-    params: { path: { database } },
-    body: {
-      file_data,
-      filename: file.name,
-    } as any,
-  });
-}
-
 export async function processDocument(database: string, data: {
-  document_id: number;
+  file_id?: string;
+  document_id?: number;
   page_type_model: string;
   parser_model: string;
 }) {

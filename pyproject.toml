@@ -23,6 +23,7 @@ dependencies = [
     "click",
     "sqlite-migrate>=0.1b0",
     "sqlite-utils>=3.38",
+    "datasette-files",
 ]
 
 [project.scripts]
@@ -34,6 +35,9 @@ dev = [
     "pytest-asyncio",
     "ruff>=0.15.0",
 ]
+
+[tool.uv.sources]
+datasette-files = { path = "../datasette-files" }
 
 
 [build-system]

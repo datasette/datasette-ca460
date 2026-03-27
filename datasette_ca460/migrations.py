@@ -37,7 +37,7 @@ def m001_initial(db: Database):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER REFERENCES datasette_ca460_documents(id) UNIQUE,
             filename TEXT,
-            content BLOB NOT NULL,
+            file_id TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -68,6 +68,12 @@ def m001_initial(db: Database):
             model_usage JSON,
             timing JSON,
             parsed_data JSON
+        );
+
+        CREATE TABLE IF NOT EXISTS datasette_ca460_page_images(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page_id INTEGER REFERENCES datasette_ca460_pages(id) UNIQUE,
+            image BLOB NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS datasette_ca460_page_tasks(

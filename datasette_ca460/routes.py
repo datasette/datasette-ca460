@@ -12,7 +12,7 @@ from .sync import (
     run_sync_documents_in_background,
     run_process_document_in_background,
     run_resume_in_background,
-    upload_pdf,
+    process_uploaded_file,
     get_task_progress,
     reset_stale_tasks,
 )
@@ -338,7 +338,7 @@ async def ca460_api_page_image(request, datasette, database: str, document_id: s
 
     source = await get_source_for_document(db, int(document_id))
     data, content_type = await source.get_image_response_for_page(
-        db, int(document_id), int(page_number)
+        db, int(document_id), int(page_number), datasette=datasette
     )
 
     if data is None:
@@ -366,7 +366,7 @@ async def ca460_api_document_pdf(request, datasette, database: str, document_id:
         return Response.html("Not found", status=404)
 
     source = await get_source_for_document(db, int(document_id))
-    data, filename = await source.get_pdf_response(db, int(document_id))
+    data, filename = await source.get_pdf_response(db, int(document_id), datasette=datasette)
 
     if data is None:
         return Response.html("Not found", status=404)
@@ -501,53 +501,9 @@ async def ca460_api_sync(request, datasette, database: str, params: Annotated[Sy
     ).model_dump())
 
 
-class UploadRequest(BaseModel):
-    file_data: str
-    filename: str
-
-class UploadResponse(BaseModel):
-    document_id: int
-    page_count: int
-    filename: str
-
-@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/upload$", output=UploadResponse)
-@check_permission()
-async def ca460_api_upload(request, datasette, database: str, body: Annotated[UploadRequest, Body()]):
-    """API endpoint to upload a PDF for processing."""
-    import base64
-
-    try:
-        db = datasette.get_database(database)
-    except KeyError:
-        return Response.json({"error": "Database not found"}, status=404)
-
-    try:
-        pdf_bytes = base64.b64decode(body.file_data)
-    except Exception:
-        return Response.json({"error": "Invalid base64 file data"}, status=400)
-
-    try:
-        document_id = await upload_pdf(db, pdf_bytes, body.filename)
-    except ValueError as e:
-        return Response.json({"error": str(e)}, status=400)
-
-    def _get_page_count(conn):
-        cursor = conn.execute(
-            "SELECT page_count FROM datasette_ca460_documents WHERE id = ?", (document_id,)
-        )
-        return cursor.fetchone()[0]
-
-    page_count = await db.execute_write_fn(_get_page_count)
-
-    return Response.json(UploadResponse(
-        document_id=document_id,
-        page_count=page_count,
-        filename=body.filename,
-    ).model_dump())
-
-
 class ProcessDocumentParams(BaseModel):
-    document_id: int
+    file_id: Optional[str] = None
+    document_id: Optional[int] = None
     page_type_model: str
     parser_model: str
 
@@ -558,13 +514,31 @@ class ProcessDocumentOutput(BaseModel):
 @router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/process$", output=ProcessDocumentOutput)
 @check_permission()
 async def ca460_api_process(request, datasette, database: str, params: Annotated[ProcessDocumentParams, Body()]):
-    """Start classifying and parsing a document."""
+    """Start processing a document.
+
+    Accepts either:
+    - file_id: a datasette-files ID (df-{ULID}) for a new PDF upload
+    - document_id: an existing document to re-process
+    """
     try:
         db = datasette.get_database(database)
     except KeyError:
         return Response.json({"error": "Database not found"}, status=404)
 
-
+    if params.file_id:
+        # New upload: read PDF from datasette-files, extract pages, store images as blobs
+        try:
+            document_id = await process_uploaded_file(
+                datasette, db, params.file_id
+            )
+        except Exception as e:
+            return Response.json({"error": str(e)}, status=400)
+    elif params.document_id:
+        document_id = params.document_id
+    else:
+        return Response.json(
+            {"error": "Either file_id or document_id is required"}, status=400
+        )
 
     sync_job_id = str(uuid.uuid4())
 
@@ -582,7 +556,7 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
             datasette,
             database,
             sync_job_id,
-            params.document_id,
+            document_id,
             params.page_type_model,
             params.parser_model,
             actor=request.actor,
@@ -591,7 +565,7 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
 
     return Response.json(ProcessDocumentOutput(
         sync_job_id=sync_job_id,
-        document_id=params.document_id,
+        document_id=document_id,
     ).model_dump())
 
 
