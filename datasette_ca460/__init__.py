@@ -37,8 +37,8 @@ def extra_template_vars(datasette):
 
 @hookimpl
 async def startup(datasette):
-    def migrate(connection):
-        db = SqliteUtilsDatabase(connection)
+    def migrate(conn):
+        db = SqliteUtilsDatabase(conn)
         migrations.apply(db)
 
     for db_name in datasette.databases:
