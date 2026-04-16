@@ -20,7 +20,10 @@ async def ds(monkeypatch):
     datasette = Datasette(
         memory=True,
         config={
-            "permissions": {"ca460_access": {"id": "*"}},
+            "permissions": {
+                "datasette-ca460-access": {"id": "*"},
+                "datasette-ca460-ingest": {"id": "*"},
+            },
             "plugins": {
                 "datasette-llm": {
                     "purposes": {
@@ -140,11 +143,55 @@ async def test_ingest_rejects_project_url(ds, auth_cookies):
 
 @pytest.mark.asyncio
 async def test_ingest_requires_authorization(ds):
-    """Without an actor, the ca460_access permission denies access."""
+    """Without an actor, the datasette-ca460-ingest permission denies access."""
     datasette, _ = ds
     response = await datasette.client.post(
         "/_memory/-/ca460/api/ingest",
         json={"url": "https://www.documentcloud.org/documents/12345-x"},
+    )
+    assert response.status_code == 403
+
+
+@pytest_asyncio.fixture
+async def ds_access_only(monkeypatch):
+    """Datasette granting only datasette-ca460-access (no ingest)."""
+    datasette = Datasette(
+        memory=True,
+        config={
+            "permissions": {"datasette-ca460-access": {"id": "*"}},
+        },
+    )
+    await datasette.invoke_startup()
+
+    # Stub out the background task + LLM so the test never reaches DC.
+    from datasette_ca460 import routes
+
+    async def fake_run(*args, **kwargs):
+        pass
+
+    class FakeModel:
+        model_id = "fake"
+
+    class FakeLLM:
+        def __init__(self, datasette):
+            pass
+
+        async def models(self, purpose=None, actor=None):
+            return [FakeModel()]
+
+    monkeypatch.setattr(routes, "run_sync_documents_in_background", fake_run)
+    monkeypatch.setattr(routes, "LLM", FakeLLM)
+    return datasette
+
+
+@pytest.mark.asyncio
+async def test_ingest_requires_ingest_permission_not_just_access(ds_access_only):
+    """An actor with only datasette-ca460-access should still be 403 on ingest."""
+    cookies = {"ds_actor": ds_access_only.sign({"a": {"id": "viewer"}}, "actor")}
+    response = await ds_access_only.client.post(
+        "/_memory/-/ca460/api/ingest",
+        json={"url": "https://www.documentcloud.org/documents/12345-x"},
+        cookies=cookies,
     )
     assert response.status_code == 403
 

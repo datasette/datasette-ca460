@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from ..router import CA460_ACCESS_NAME
+from ..router import ACCESS_PERMISSION
 
 
 @click.command(name="serve")
@@ -24,7 +24,7 @@ def ca460_serve(db_path, port, host, no_open):
     ds = Datasette(
         files=[str(db_path)],
         settings={"default_allow_sql": False},
-        config={"permissions": {CA460_ACCESS_NAME: True}},
+        config={"permissions": {ACCESS_PERMISSION: True}},
     )
 
     if not no_open:

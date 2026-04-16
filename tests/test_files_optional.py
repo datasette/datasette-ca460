@@ -13,7 +13,7 @@ from datasette_ca460.migrations import migrations
 async def ds():
     datasette = Datasette(
         memory=True,
-        config={"permissions": {"ca460_access": {"id": "*"}}},
+        config={"permissions": {"datasette-ca460-access": {"id": "*"}}},
     )
     await datasette.invoke_startup()
     db = datasette.get_database("_memory")

@@ -9,7 +9,7 @@ from datasette.app import Datasette
 async def ds():
     datasette = Datasette(
         memory=True,
-        config={"permissions": {"ca460_access": {"id": "*"}}},
+        config={"permissions": {"datasette-ca460-access": {"id": "*"}}},
     )
     await datasette.invoke_startup()
     return datasette

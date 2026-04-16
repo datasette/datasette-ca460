@@ -19,7 +19,7 @@ from .sync import (
 from .documentcloud import DocumentCloudClient, parse_documentcloud_url
 from .sources import get_source_for_document
 from .files_storage import is_files_available
-from .router import router, check_permission
+from .router import router, check_permission, INGEST_PERMISSION
 import asyncio
 import uuid
 
@@ -791,10 +791,10 @@ async def ca460_api_dc_import(request, datasette, database: str, body: Annotated
 # Third-party ingest endpoint
 #
 # One-shot entry point for external services (e.g. a webhook or scheduled job
-# holding a datasette-auth-tokens bearer token with ca460_access). POST a
-# DocumentCloud URL; ca460 resolves it, creates a sync job, and starts
-# parsing in the background using the default models configured for each
-# ca460 purpose in datasette-llm.
+# holding a datasette-auth-tokens bearer token with the datasette-ca460-ingest
+# permission). POST a DocumentCloud URL; ca460 resolves it, creates a sync
+# job, and starts parsing in the background using the default models
+# configured for each ca460 purpose in datasette-llm.
 # ---------------------------------------------------------------------------
 
 class IngestRequest(BaseModel):
@@ -813,7 +813,7 @@ async def _default_model_id(ds_llm, purpose: str, actor: Optional[dict]) -> Opti
 
 
 @router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/ingest$", output=IngestOutput)
-@check_permission()
+@check_permission(INGEST_PERMISSION)
 async def ca460_api_ingest(request, datasette, database: str, body: Annotated[IngestRequest, Body()]):
     """Ingest a DocumentCloud document URL and kick off parsing in the background."""
     try:

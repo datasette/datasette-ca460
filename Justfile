@@ -63,7 +63,7 @@ dev *flags:
       --with datasette-debug-gotham \
       --with datasette-sidebar \
       datasette \
-        -s permissions.ca460_access.id "*" \
+        -s permissions.datasette-ca460-access.id "*" \
         -s permissions.datasette-sidebar-access.id "*" \
         -s plugins.datasette-llm.purposes.ca460-classify.models '["gemini/gemini-3-flash-preview"]' \
         -s plugins.datasette-llm.purposes.ca460-parse.models '["gemini/gemini-3-flash-preview"]' \
@@ -79,7 +79,8 @@ dev-tmp:
       --with datasette-sidebar \
       --with "datasette-auth-tokens==0.4a12" \
       datasette \
-        -s permissions.ca460_access.id "*" \
+        -s permissions.datasette-ca460-access.id "*" \
+        -s permissions.datasette-ca460-ingest.id "*" \
         -s permissions.datasette-sidebar-access.id "*" \
         -s permissions.auth-tokens-create.id clark \
         -s plugins.datasette-auth-tokens.manage_tokens true \

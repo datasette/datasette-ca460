@@ -7,7 +7,7 @@ import os
 
 # Import routes module to trigger route registration on the shared router
 from . import routes
-from .router import router, CA460_ACCESS_NAME
+from .router import router, ACCESS_PERMISSION, INGEST_PERMISSION
 from .migrations import migrations
 from .cli import ca460_cli
 
@@ -49,8 +49,12 @@ async def startup(datasette):
 def register_actions(datasette):
     return [
         Action(
-            name=CA460_ACCESS_NAME,
+            name=ACCESS_PERMISSION,
             description="Can access CA 460 features",
+        ),
+        Action(
+            name=INGEST_PERMISSION,
+            description="Can POST to the CA 460 ingest endpoint",
         ),
     ]
 

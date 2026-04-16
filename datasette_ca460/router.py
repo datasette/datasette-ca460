@@ -5,20 +5,19 @@ from datasette_plugin_router import Router
 
 router = Router()
 
-CA460_ACCESS_NAME = "ca460_access"
+ACCESS_PERMISSION = "datasette-ca460-access"
+INGEST_PERMISSION = "datasette-ca460-ingest"
 
 
-def check_permission():
-    """Decorator for routes requiring CA 460 access."""
+def check_permission(action: str = ACCESS_PERMISSION):
+    """Decorator for routes requiring a CA 460 permission. Defaults to access."""
 
     def decorator(func):
         @wraps(func)
         async def wrapper(datasette, request, **kwargs):
-            result = await datasette.allowed(
-                action=CA460_ACCESS_NAME, actor=request.actor
-            )
+            result = await datasette.allowed(action=action, actor=request.actor)
             if not result:
-                raise Forbidden("Permission denied for CA 460 access")
+                raise Forbidden(f"Permission denied: {action}")
             return await func(datasette=datasette, request=request, **kwargs)
 
         return wrapper
