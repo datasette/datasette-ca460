@@ -5,7 +5,7 @@
   import { documents as fetchDocuments } from './api';
   import { loadPageData } from './pageData';
 
-  const { database } = loadPageData<{ database: string }>();
+  const { database, files_available } = loadPageData<{ database: string; files_available: boolean }>();
 
   interface Document {
     id: number;
@@ -122,7 +122,7 @@
   {/if}
 </main>
 
-<UploadDialog {database} bind:open={uploadOpen} onclose={() => uploadOpen = false} />
+<UploadDialog {database} filesAvailable={files_available} bind:open={uploadOpen} onclose={() => uploadOpen = false} />
 
 <style>
   .page-header {

@@ -16,7 +16,7 @@ dependencies = [
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
     "llm-gemini>=0.28.2",
-    "datasette-llm>=0.1a2",
+    "datasette-llm>=0.1a6",
     "datasette-plugin-router>=0.0.1a2",
     "datasette-vite>=0.0.1a2",
     "pdf-lib-rs-py",
@@ -24,6 +24,9 @@ dependencies = [
     "sqlite-migrate>=0.1b0",
     "sqlite-utils>=3.38",
 ]
+
+[project.optional-dependencies]
+files = ["datasette-files==0.1a3"]
 
 [project.scripts]
 datasette-ca460 = "datasette_ca460.cli:ca460_cli"
@@ -34,6 +37,7 @@ dev = [
     "pytest-asyncio",
     "ruff>=0.15.0",
 ]
+
 
 
 [build-system]

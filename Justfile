@@ -58,18 +58,36 @@ check:
 
 # Development servers
 dev *flags:
+    mkdir -p example/fs
     DATASETTE_SECRET=abc123 uv run \
       --with datasette-debug-gotham \
       --with datasette-sidebar \
       datasette \
         -s permissions.ca460_access.id "*" \
         -s permissions.datasette-sidebar-access.id "*" \
-        tmp.db \
+        -s plugins.datasette-llm.purposes.ca460-classify.models '["gemini/gemini-3-flash-preview"]' \
+        -s plugins.datasette-llm.purposes.ca460-parse.models '["gemini/gemini-3-flash-preview"]' \
         --plugins-dir example \
         {{flags}}
 
+dev-tmp:
+  DATASETTE_SECRET=abc123 uv run \
+      --no-project \
+      --with-editable . \
+      --with 'datasette>1a' \
+      --with datasette-debug-gotham \
+      --with datasette-sidebar \
+      --with "datasette-auth-tokens==0.4a12" \
+      datasette \
+        -s permissions.ca460_access.id "*" \
+        -s permissions.datasette-sidebar-access.id "*" \
+        -s permissions.auth-tokens-create.id clark \
+        -s plugins.datasette-auth-tokens.manage_tokens true \
+        --plugins-dir example \
+        -p 3039 x.db --internal internalx.db --create
+
 test *flags:
-    uv run pytest tests/ {{flags}}
+    uv run --extra files pytest tests/ {{flags}}
 
 dev-with-hmr *flags:
     DATASETTE_CA460_VITE_PATH=http://localhost:{{DEV_PORT}}/ \

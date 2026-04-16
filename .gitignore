@@ -16,6 +16,7 @@ uv.lock
 
 tmp*
 
+example/fs
 datasette_ca460/static/gen
 datasette_ca460/manifest.json
 *.db

@@ -135,7 +135,14 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            /** Classify */
+                            classify: string[];
+                            /** Parse */
+                            parse: string[];
+                        };
+                    };
                 };
             };
         };
@@ -389,59 +396,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/{database}/-/ca460/api/upload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    database: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        /** File Data */
-                        file_data: string;
-                        /** Filename */
-                        filename: string;
-                    };
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            /** Document Id */
-                            document_id: number;
-                            /** Page Count */
-                            page_count: number;
-                            /** Filename */
-                            filename: string;
-                        };
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/{database}/-/ca460/api/process": {
         parameters: {
             query?: never;
@@ -463,8 +417,16 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        /** Document Id */
-                        document_id: number;
+                        /**
+                         * File Id
+                         * @default null
+                         */
+                        file_id?: string | null;
+                        /**
+                         * Document Id
+                         * @default null
+                         */
+                        document_id?: number | null;
                         /** Page Type Model */
                         page_type_model: string;
                         /** Parser Model */
@@ -816,6 +778,65 @@ export interface paths {
                         "application/json": {
                             /** Sync Job Id */
                             sync_job_id: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/{database}/-/ca460/api/ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    database: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Url */
+                        url: string;
+                        /**
+                         * Page Type Model
+                         * @default null
+                         */
+                        page_type_model?: string | null;
+                        /**
+                         * Parser Model
+                         * @default null
+                         */
+                        parser_model?: string | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Sync Job Id */
+                            sync_job_id: string;
+                            /** Document Ids */
+                            document_ids: number[];
                         };
                     };
                 };

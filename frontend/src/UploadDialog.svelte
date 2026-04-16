@@ -1,32 +1,36 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { models as fetchModels, uploadPdf, processDocument, syncEvents } from './api';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { models as fetchModels, processDocument, syncEvents } from './api';
   import DocumentCloudBrowser from './DocumentCloudBrowser.svelte';
+
+  import { ensureFilePickerLoaded } from './datasette-files';
 
   interface Props {
     database: string;
+    filesAvailable: boolean;
     open: boolean;
     onclose: () => void;
   }
 
-  let { database, open = $bindable(), onclose }: Props = $props();
+  let { database, filesAvailable, open = $bindable(), onclose }: Props = $props();
 
   let dialogEl: HTMLDialogElement | null = $state(null);
 
   type Tab = 'upload' | 'documentcloud';
-  let activeTab: Tab = $state('upload');
+  let activeTab: Tab = $state(untrack(() => filesAvailable) ? 'upload' : 'documentcloud');
 
   // Shared
   let pageTypeModel = $state('');
   let parserModel = $state('');
-  let availableModels: string[] = $state([]);
+  let classifyModels: string[] = $state([]);
+  let parseModels: string[] = $state([]);
   let loadingModels = $state(true);
   let error: string | null = $state(null);
 
   // Upload
-  let selectedFile: File | null = $state(null);
-  let dragging = $state(false);
-  let uploading = $state(false);
+  let selectedFileId: string | null = $state(null);
+  let selectedFileName: string | null = $state(null);
+  let processing = $state(false);
 
   // DocumentCloud sync progress (shared between DC browser import and legacy)
   let syncJobId: string | null = $state(null);
@@ -52,67 +56,52 @@
       const { data, error: err, response } = await fetchModels(database);
       if (err || !response.ok) return;
       const d = data as any;
-      availableModels = d.models || [];
-      if (availableModels.length > 0) {
-        pageTypeModel = availableModels[0];
-        parserModel = availableModels[0];
-      }
+      classifyModels = d.classify || [];
+      parseModels = d.parse || [];
+      if (classifyModels.length > 0) pageTypeModel = classifyModels[0];
+      if (parseModels.length > 0) parserModel = parseModels[0];
     } catch (e) { /* ignore */ }
     finally { loadingModels = false; }
   }
 
-  // --- Upload ---
+  // --- File picker ---
 
-  function handleDragOver(e: DragEvent) { e.preventDefault(); dragging = true; }
-  function handleDragLeave(e: DragEvent) { e.preventDefault(); dragging = false; }
-
-  function handleDrop(e: DragEvent) {
-    e.preventDefault();
-    dragging = false;
-    const file = e.dataTransfer?.files?.[0];
-    if (file && (file.type === 'application/pdf' || file.name.endsWith('.pdf'))) {
-      selectedFile = file; error = null;
-    } else {
-      error = 'Please drop a PDF file';
-    }
+  function openFilePicker() {
+    ensureFilePickerLoaded();
+    const picker = document.createElement('datasette-file-picker');
+    picker.addEventListener('file-selected', (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.fileId) {
+        selectedFileId = detail.fileId;
+        selectedFileName = detail.fileId;
+        error = null;
+      }
+    });
+    document.body.appendChild(picker);
   }
 
-  function handleFileInput(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (input.files?.[0]) { selectedFile = input.files[0]; error = null; }
-  }
+  function clearFile() { selectedFileId = null; selectedFileName = null; error = null; }
 
-  function clearFile() { selectedFile = null; error = null; }
-
-  function formatFileSize(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  async function handleUpload() {
-    if (!selectedFile) return;
-    uploading = true;
+  async function handleProcess() {
+    if (!selectedFileId) return;
+    processing = true;
     error = null;
 
     try {
-      const { data, error: uploadErr } = await uploadPdf(database, selectedFile);
-      if (uploadErr || !data) { error = (uploadErr as any)?.error || 'Upload failed'; return; }
-
-      const { data: processData, error: processErr } = await processDocument(database, {
-        document_id: data.document_id,
+      const { data, error: processErr } = await processDocument(database, {
+        file_id: selectedFileId,
         page_type_model: pageTypeModel,
         parser_model: parserModel,
       });
 
-      if (processErr || !processData) { error = 'Uploaded but failed to start processing'; return; }
+      if (processErr || !data) { error = (processErr as any)?.error || 'Processing failed'; return; }
 
-      const jobId = (processData as any).sync_job_id;
-      window.location.href = `/${database}/-/ca460/document/${data.document_id}?sync_job_id=${jobId}`;
+      const d = data as any;
+      window.location.href = `/${database}/-/ca460/document/${d.document_id}?sync_job_id=${d.sync_job_id}`;
     } catch (e) {
-      error = 'Upload failed';
+      error = 'Processing failed';
     } finally {
-      uploading = false;
+      processing = false;
     }
   }
 
@@ -158,7 +147,13 @@
     </div>
 
     <div class="tabs">
-      <button class="tab" class:active={activeTab === 'upload'} onclick={() => activeTab = 'upload'}>Upload PDF</button>
+      <button
+        class="tab"
+        class:active={activeTab === 'upload'}
+        disabled={!filesAvailable}
+        title={filesAvailable ? '' : 'PDF upload requires the datasette-files extra. Install with: pip install datasette-ca460[files]'}
+        onclick={() => { if (filesAvailable) activeTab = 'upload'; }}
+      >Pick File</button>
       <button class="tab" class:active={activeTab === 'documentcloud'} onclick={() => activeTab = 'documentcloud'}>DocumentCloud</button>
     </div>
 
@@ -167,76 +162,65 @@
         <div class="error-msg">{error}</div>
       {/if}
 
-      <div
-        class="drop-zone"
-        class:drop-zone-active={dragging}
-        class:drop-zone-has-file={selectedFile !== null}
-        role="button"
-        tabindex="0"
-        ondragover={handleDragOver}
-        ondragleave={handleDragLeave}
-        ondrop={handleDrop}
-        onclick={() => document.getElementById('upload-file-input')?.click()}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') document.getElementById('upload-file-input')?.click(); }}
-      >
-        <input type="file" id="upload-file-input" accept=".pdf,application/pdf" onchange={handleFileInput} hidden />
-        {#if selectedFile}
+      {#if !selectedFileId}
+        <div class="picker-container">
+          <button class="btn-primary" onclick={openFilePicker}>Select or upload a PDF</button>
+        </div>
+      {:else}
+        <div class="selected-file">
           <div class="file-info">
-            <strong>{selectedFile.name}</strong>
-            <span class="file-size">{formatFileSize(selectedFile.size)}</span>
+            <strong>{selectedFileName}</strong>
+            <span class="file-id">{selectedFileId}</span>
           </div>
-        {:else}
-          <p class="drop-prompt">Drop a PDF here or click to select</p>
-        {/if}
-      </div>
+          <button class="btn-secondary btn-sm" onclick={clearFile}>Change</button>
+        </div>
 
-      {#if selectedFile}
         <div class="model-row">
           <div class="model-field">
             <label for="upload-ptm">Classifier:</label>
             <select id="upload-ptm" bind:value={pageTypeModel} disabled={loadingModels}>
-              {#each availableModels as m}<option value={m}>{m}</option>{/each}
+              {#each classifyModels as m}<option value={m}>{m}</option>{/each}
             </select>
           </div>
           <div class="model-field">
             <label for="upload-pm">Parser:</label>
             <select id="upload-pm" bind:value={parserModel} disabled={loadingModels}>
-              {#each availableModels as m}<option value={m}>{m}</option>{/each}
+              {#each parseModels as m}<option value={m}>{m}</option>{/each}
             </select>
           </div>
         </div>
 
         <div class="actions">
-          <button class="btn-primary" onclick={handleUpload} disabled={uploading || loadingModels}>
-            {uploading ? 'Uploading...' : 'Upload & Process'}
+          <button class="btn-primary" onclick={handleProcess} disabled={processing || loadingModels}>
+            {processing ? 'Processing...' : 'Process Document'}
           </button>
-          <button class="btn-secondary" onclick={clearFile} disabled={uploading}>Clear</button>
+          <button class="btn-secondary" onclick={clearFile} disabled={processing}>Clear</button>
         </div>
       {/if}
 
     {:else}
       {#if !syncJobId}
-        <div class="model-row dc-models">
-          <div class="model-field">
-            <label for="dc-ptm">Classifier:</label>
-            <select id="dc-ptm" bind:value={pageTypeModel} disabled={loadingModels}>
-              {#each availableModels as m}<option value={m}>{m}</option>{/each}
-            </select>
-          </div>
-          <div class="model-field">
-            <label for="dc-pm">Parser:</label>
-            <select id="dc-pm" bind:value={parserModel} disabled={loadingModels}>
-              {#each availableModels as m}<option value={m}>{m}</option>{/each}
-            </select>
-          </div>
-        </div>
-
         <DocumentCloudBrowser
           {database}
           {pageTypeModel}
           {parserModel}
           onJobStarted={handleDcJobStarted}
         />
+
+        <div class="model-row dc-models">
+          <div class="model-field">
+            <label for="dc-ptm">Classifier:</label>
+            <select id="dc-ptm" bind:value={pageTypeModel} disabled={loadingModels}>
+              {#each classifyModels as m}<option value={m}>{m}</option>{/each}
+            </select>
+          </div>
+          <div class="model-field">
+            <label for="dc-pm">Parser:</label>
+            <select id="dc-pm" bind:value={parserModel} disabled={loadingModels}>
+              {#each parseModels as m}<option value={m}>{m}</option>{/each}
+            </select>
+          </div>
+        </div>
       {:else}
         <div class="sync-progress">
           <div class="sync-status">
@@ -260,7 +244,8 @@
 </dialog>
 
 <style>
-  dialog { border: none; border-radius: 12px; padding: 0; max-width: 720px; width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  dialog { border: none; border-radius: 12px; padding: 0; max-width: 1000px; width: 90vw; max-height: 90vh; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .dialog-content { max-height: 90vh; overflow-y: auto; }
   dialog::backdrop { background: rgba(0,0,0,0.4); }
 
   .dialog-content { padding: 1.5em; }
@@ -271,21 +256,21 @@
 
   .tabs { display: flex; gap: 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 1.25em; }
   .tab { padding: 0.5em 1em; background: none; border: 2px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; cursor: pointer; font-size: 0.9em; color: #64748b; margin-bottom: -2px; }
-  .tab:hover { color: #334155; background: #f8fafc; }
+  .tab:hover:not(:disabled) { color: #334155; background: #f8fafc; }
   .tab.active { color: #334155; border-color: #e2e8f0; background: white; font-weight: 600; }
+  .tab:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .error-msg { padding: 0.6em 0.8em; background: #fee2e2; color: #991b1b; border-radius: 6px; margin-bottom: 1em; font-size: 0.9em; }
 
-  .drop-zone { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 2em; text-align: center; cursor: pointer; transition: all 0.15s; }
-  .drop-zone:hover { border-color: #94a3b8; background: #f8fafc; }
-  .drop-zone-active { border-color: #0066cc; background: #e8f0fe; }
-  .drop-zone-has-file { border-style: solid; border-color: #059669; background: #f0fdf4; }
-  .drop-prompt { margin: 0; color: #94a3b8; }
-  .file-info { display: flex; flex-direction: column; gap: 0.2em; }
-  .file-size { font-size: 0.85em; color: #64748b; }
+  .picker-container { margin-top: 0.5em; }
+  .picker-hint { color: #64748b; font-size: 0.9em; margin: 0 0 0.75em 0; }
+
+  .selected-file { display: flex; align-items: center; justify-content: space-between; padding: 0.75em 1em; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; }
+  .file-info { display: flex; flex-direction: column; gap: 0.1em; }
+  .file-id { font-size: 0.8em; color: #64748b; font-family: monospace; }
 
   .model-row { display: flex; gap: 1em; margin-top: 1.25em; }
-  .dc-models { margin-top: 0; margin-bottom: 1em; }
+  .dc-models { margin-top: 1.25em; padding-top: 1em; border-top: 1px solid #e2e8f0; }
   .model-field { flex: 1; }
   .model-field label { display: block; font-size: 0.8em; color: #64748b; margin-bottom: 0.25em; }
   .model-field select { width: 100%; padding: 0.35em 0.5em; font-size: 0.85em; border: 1px solid #d1d5db; border-radius: 4px; }
@@ -296,6 +281,7 @@
   .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-secondary { padding: 0.6em 1.2em; background: #f1f5f9; color: #475569; border: 1px solid #d1d5db; border-radius: 6px; cursor: pointer; font-size: 0.9em; }
   .btn-secondary:hover:not(:disabled) { background: #e2e8f0; }
+  .btn-sm { padding: 0.3em 0.7em; font-size: 0.82em; }
 
   .sync-progress { margin-top: 0.5em; }
   .sync-status { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; font-size: 0.9em; }

@@ -12,23 +12,27 @@ from .sync import (
     run_sync_documents_in_background,
     run_process_document_in_background,
     run_resume_in_background,
-    upload_pdf,
+    process_uploaded_file,
     get_task_progress,
     reset_stale_tasks,
 )
 from .documentcloud import DocumentCloudClient, parse_documentcloud_url
 from .sources import get_source_for_document
+from .files_storage import is_files_available
 from .router import router, check_permission
 import asyncio
 import uuid
 
 
 async def _render_vite_entry(datasette, request, entrypoint: str, page_data: Optional[dict] = None) -> str:
+    merged = {"files_available": is_files_available()}
+    if page_data:
+        merged.update(page_data)
     return await datasette.render_template(
         "ca460_vite_entry.html",
         {
             "entry_name": entrypoint,
-            "page_data": page_data,
+            "page_data": merged,
         },
         request=request,
     )
@@ -80,10 +84,15 @@ async def ca460_page_detail_view(request, datasette, database: str, document_id:
     )
 
 
-@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/models$")
+class ModelsOutput(BaseModel):
+    classify: list[str]
+    parse: list[str]
+
+
+@router.GET(r"^/(?P<database>[^/]+)/-/ca460/api/models$", output=ModelsOutput)
 @check_permission()
 async def ca460_api_models(request, datasette):
-    """API endpoint to get available LLM models."""
+    """Return LLM models allowed for each ca460 purpose, filtered for the actor."""
     database_name = request.url_vars["database"]
 
     try:
@@ -92,9 +101,16 @@ async def ca460_api_models(request, datasette):
         return Response.json({"error": "Database not found"}, status=404)
 
     ds_llm = LLM(datasette)
-    available_models = [m.model_id for m in await ds_llm.models()]
+    classify_models = [
+        m.model_id for m in await ds_llm.models(purpose="ca460-classify", actor=request.actor)
+    ]
+    parse_models = [
+        m.model_id for m in await ds_llm.models(purpose="ca460-parse", actor=request.actor)
+    ]
 
-    return Response.json({"models": available_models})
+    return Response.json(
+        ModelsOutput(classify=classify_models, parse=parse_models).model_dump()
+    )
 
 
 class DocumentListItem(BaseModel):
@@ -338,7 +354,7 @@ async def ca460_api_page_image(request, datasette, database: str, document_id: s
 
     source = await get_source_for_document(db, int(document_id))
     data, content_type = await source.get_image_response_for_page(
-        db, int(document_id), int(page_number)
+        db, int(document_id), int(page_number), datasette=datasette
     )
 
     if data is None:
@@ -366,7 +382,7 @@ async def ca460_api_document_pdf(request, datasette, database: str, document_id:
         return Response.html("Not found", status=404)
 
     source = await get_source_for_document(db, int(document_id))
-    data, filename = await source.get_pdf_response(db, int(document_id))
+    data, filename = await source.get_pdf_response(db, int(document_id), datasette=datasette)
 
     if data is None:
         return Response.html("Not found", status=404)
@@ -501,53 +517,9 @@ async def ca460_api_sync(request, datasette, database: str, params: Annotated[Sy
     ).model_dump())
 
 
-class UploadRequest(BaseModel):
-    file_data: str
-    filename: str
-
-class UploadResponse(BaseModel):
-    document_id: int
-    page_count: int
-    filename: str
-
-@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/upload$", output=UploadResponse)
-@check_permission()
-async def ca460_api_upload(request, datasette, database: str, body: Annotated[UploadRequest, Body()]):
-    """API endpoint to upload a PDF for processing."""
-    import base64
-
-    try:
-        db = datasette.get_database(database)
-    except KeyError:
-        return Response.json({"error": "Database not found"}, status=404)
-
-    try:
-        pdf_bytes = base64.b64decode(body.file_data)
-    except Exception:
-        return Response.json({"error": "Invalid base64 file data"}, status=400)
-
-    try:
-        document_id = await upload_pdf(db, pdf_bytes, body.filename)
-    except ValueError as e:
-        return Response.json({"error": str(e)}, status=400)
-
-    def _get_page_count(conn):
-        cursor = conn.execute(
-            "SELECT page_count FROM datasette_ca460_documents WHERE id = ?", (document_id,)
-        )
-        return cursor.fetchone()[0]
-
-    page_count = await db.execute_write_fn(_get_page_count)
-
-    return Response.json(UploadResponse(
-        document_id=document_id,
-        page_count=page_count,
-        filename=body.filename,
-    ).model_dump())
-
-
 class ProcessDocumentParams(BaseModel):
-    document_id: int
+    file_id: Optional[str] = None
+    document_id: Optional[int] = None
     page_type_model: str
     parser_model: str
 
@@ -558,13 +530,36 @@ class ProcessDocumentOutput(BaseModel):
 @router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/process$", output=ProcessDocumentOutput)
 @check_permission()
 async def ca460_api_process(request, datasette, database: str, params: Annotated[ProcessDocumentParams, Body()]):
-    """Start classifying and parsing a document."""
+    """Start processing a document.
+
+    Accepts either:
+    - file_id: a datasette-files ID (df-{ULID}) for a new PDF upload
+    - document_id: an existing document to re-process
+    """
     try:
         db = datasette.get_database(database)
     except KeyError:
         return Response.json({"error": "Database not found"}, status=404)
 
-
+    if params.file_id:
+        if not is_files_available():
+            return Response.json(
+                {"error": "PDF upload is not available. Install datasette-ca460[files] to enable it."},
+                status=501,
+            )
+        # New upload: read PDF from datasette-files, extract pages, store images as blobs
+        try:
+            document_id = await process_uploaded_file(
+                datasette, db, params.file_id
+            )
+        except Exception as e:
+            return Response.json({"error": str(e)}, status=400)
+    elif params.document_id:
+        document_id = params.document_id
+    else:
+        return Response.json(
+            {"error": "Either file_id or document_id is required"}, status=400
+        )
 
     sync_job_id = str(uuid.uuid4())
 
@@ -582,7 +577,7 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
             datasette,
             database,
             sync_job_id,
-            params.document_id,
+            document_id,
             params.page_type_model,
             params.parser_model,
             actor=request.actor,
@@ -591,7 +586,7 @@ async def ca460_api_process(request, datasette, database: str, params: Annotated
 
     return Response.json(ProcessDocumentOutput(
         sync_job_id=sync_job_id,
-        document_id=params.document_id,
+        document_id=document_id,
     ).model_dump())
 
 
@@ -791,3 +786,89 @@ async def ca460_api_dc_import(request, datasette, database: str, body: Annotated
 
     return Response.json(DcImportOutput(sync_job_id=sync_job_id).model_dump())
 
+
+# ---------------------------------------------------------------------------
+# Third-party ingest endpoint
+#
+# One-shot entry point for external services (e.g. a webhook or scheduled job
+# holding a datasette-auth-tokens bearer token with ca460_access). POST a
+# DocumentCloud URL; ca460 resolves it, creates a sync job, and starts
+# parsing in the background using the default models configured for each
+# ca460 purpose in datasette-llm.
+# ---------------------------------------------------------------------------
+
+class IngestRequest(BaseModel):
+    url: str
+    page_type_model: Optional[str] = None
+    parser_model: Optional[str] = None
+
+class IngestOutput(BaseModel):
+    sync_job_id: str
+    document_ids: list[int]
+
+
+async def _default_model_id(ds_llm, purpose: str, actor: Optional[dict]) -> Optional[str]:
+    models = await ds_llm.models(purpose=purpose, actor=actor)
+    return models[0].model_id if models else None
+
+
+@router.POST(r"^/(?P<database>[^/]+)/-/ca460/api/ingest$", output=IngestOutput)
+@check_permission()
+async def ca460_api_ingest(request, datasette, database: str, body: Annotated[IngestRequest, Body()]):
+    """Ingest a DocumentCloud document URL and kick off parsing in the background."""
+    try:
+        db = datasette.get_database(database)
+    except KeyError:
+        return Response.json({"error": "Database not found"}, status=404)
+
+    parsed = parse_documentcloud_url(body.url)
+    if parsed is None:
+        return Response.json({"error": "Unrecognised DocumentCloud URL"}, status=400)
+    if parsed["type"] != "document":
+        return Response.json(
+            {"error": f"Only document URLs are supported, got {parsed['type']}"},
+            status=400,
+        )
+
+    document_ids = [parsed["id"]]
+
+    ds_llm = LLM(datasette)
+    page_type_model = body.page_type_model or await _default_model_id(
+        ds_llm, "ca460-classify", request.actor
+    )
+    parser_model = body.parser_model or await _default_model_id(
+        ds_llm, "ca460-parse", request.actor
+    )
+    if not page_type_model or not parser_model:
+        return Response.json(
+            {"error": "No default model available for one or both ca460 purposes"},
+            status=500,
+        )
+
+    sync_job_id = str(uuid.uuid4())
+
+    def _create_job(conn):
+        conn.execute(
+            "INSERT INTO datasette_ca460_sync_jobs (id, page_type_model, parser_model) VALUES (?, ?, ?)",
+            (sync_job_id, page_type_model, parser_model),
+        )
+        conn.commit()
+    await db.execute_write_fn(_create_job)
+
+    token = _get_dc_token(datasette)
+    asyncio.create_task(
+        run_sync_documents_in_background(
+            datasette,
+            database,
+            sync_job_id,
+            document_ids,
+            page_type_model,
+            parser_model,
+            token=token,
+            actor=request.actor,
+        )
+    )
+
+    return Response.json(
+        IngestOutput(sync_job_id=sync_job_id, document_ids=document_ids).model_dump()
+    )

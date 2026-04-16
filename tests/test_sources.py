@@ -31,7 +31,7 @@ async def ds():
 
 
 @pytest.mark.asyncio
-async def test_upload_source_store_and_get(ds):
+async def test_upload_source_store_page(ds):
     _datasette, db = ds
     source = UploadSource()
 
@@ -48,19 +48,53 @@ async def test_upload_source_store_and_get(ds):
     doc_id = await db.execute_write_fn(_create_doc)
 
     # Store a page with image blob
-    fake_image = b"\x89PNG\r\n\x1a\n fake image data"
-    page_id = await source.store_page(db, doc_id, 1, image=fake_image)
+    image_bytes = b"\x89PNG fake image data"
+    page_id = await source.store_page(db, doc_id, 1, image=image_bytes)
     assert page_id is not None
 
-    # Retrieve image bytes
-    result = await source.get_page_image_bytes(db, page_id)
-    assert result == fake_image
+    # Verify stored correctly
+    def _check(conn):
+        cursor = conn.execute(
+            "SELECT image FROM datasette_ca460_pages WHERE id = ?", (page_id,)
+        )
+        return cursor.fetchone()[0]
+
+    assert await db.execute_write_fn(_check) == image_bytes
 
 
 @pytest.mark.asyncio
-async def test_upload_source_image_response(ds):
+async def test_upload_source_get_page_image_bytes(ds):
     _datasette, db = ds
     source = UploadSource()
+
+    image_bytes = b"\x89PNG test image"
+
+    def _create(conn):
+        cursor = conn.execute(
+            "INSERT INTO datasette_ca460_documents(source, page_count, data) VALUES (?, ?, ?) RETURNING id",
+            ("upload", 1, "{}"),
+        )
+        doc_id = cursor.fetchone()[0]
+        cursor = conn.execute(
+            "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?) RETURNING id",
+            (doc_id, 1, image_bytes),
+        )
+        page_id = cursor.fetchone()[0]
+        conn.commit()
+        return page_id
+
+    page_id = await db.execute_write_fn(_create)
+
+    result = await source.get_page_image_bytes(db, page_id)
+    assert result == image_bytes
+
+
+@pytest.mark.asyncio
+async def test_upload_source_image_response_returns_bytes(ds):
+    _datasette, db = ds
+    source = UploadSource()
+
+    image_bytes = b"\x89PNG test image"
 
     def _create(conn):
         cursor = conn.execute(
@@ -70,7 +104,7 @@ async def test_upload_source_image_response(ds):
         doc_id = cursor.fetchone()[0]
         conn.execute(
             "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?)",
-            (doc_id, 1, b"png-bytes"),
+            (doc_id, 1, image_bytes),
         )
         conn.commit()
         return doc_id
@@ -78,7 +112,7 @@ async def test_upload_source_image_response(ds):
     doc_id = await db.execute_write_fn(_create)
 
     data, content_type = await source.get_image_response_for_page(db, doc_id, 1)
-    assert data == b"png-bytes"
+    assert data == image_bytes
     assert content_type == "image/png"
 
 
@@ -95,7 +129,7 @@ async def test_upload_source_embed_url(ds):
 
 
 @pytest.mark.asyncio
-async def test_upload_source_pdf_response(ds):
+async def test_upload_source_pdf_response_redirect(ds):
     _datasette, db = ds
     source = UploadSource()
 
@@ -106,17 +140,17 @@ async def test_upload_source_pdf_response(ds):
         )
         doc_id = cursor.fetchone()[0]
         conn.execute(
-            "INSERT INTO datasette_ca460_document_files(document_id, filename, content) VALUES (?, ?, ?)",
-            (doc_id, "test.pdf", b"pdf-content"),
+            "INSERT INTO datasette_ca460_document_files(document_id, filename, file_id) VALUES (?, ?, ?)",
+            (doc_id, "test.pdf", "df-pdf123"),
         )
         conn.commit()
         return doc_id
 
     doc_id = await db.execute_write_fn(_create)
 
-    data, filename = await source.get_pdf_response(db, doc_id)
-    assert data == b"pdf-content"
-    assert filename == "test.pdf"
+    url, filename = await source.get_pdf_response(db, doc_id)
+    assert url == "/-/files/df-pdf123/download"
+    assert filename is None  # signals redirect
 
 
 @pytest.mark.asyncio
@@ -138,7 +172,7 @@ async def test_dc_source_store_url_not_blob(ds):
     cdn_url = "https://assets.documentcloud.org/documents/123/pages/slug-p1-large.gif"
     page_id = await source.store_page(db, doc_id, 1, image_url=cdn_url)
 
-    # Verify stored URL, not blob
+    # Verify stored URL
     def _check(conn):
         cursor = conn.execute(
             "SELECT image, image_url FROM datasette_ca460_pages WHERE id = ?", (page_id,)
@@ -175,31 +209,6 @@ async def test_dc_source_image_response_returns_url_for_redirect(ds):
     data, content_type = await source.get_image_response_for_page(db, doc_id, 1)
     assert data == cdn_url
     assert content_type is None  # signals redirect
-
-
-@pytest.mark.asyncio
-async def test_dc_source_image_response_falls_back_to_blob(ds):
-    _datasette, db = ds
-    source = DocumentCloudSource()
-
-    def _create(conn):
-        cursor = conn.execute(
-            "INSERT INTO datasette_ca460_documents(source, page_count, data) VALUES (?, ?, ?) RETURNING id",
-            ("documentcloud", 1, "{}"),
-        )
-        doc_id = cursor.fetchone()[0]
-        conn.execute(
-            "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?)",
-            (doc_id, 1, b"blob-bytes"),
-        )
-        conn.commit()
-        return doc_id
-
-    doc_id = await db.execute_write_fn(_create)
-
-    data, content_type = await source.get_image_response_for_page(db, doc_id, 1)
-    assert data == b"blob-bytes"
-    assert content_type == "image/png"
 
 
 @pytest.mark.asyncio
@@ -258,7 +267,7 @@ async def test_factory_returns_upload_source(ds):
         doc_id = cursor.fetchone()[0]
         conn.execute(
             "INSERT INTO datasette_ca460_pages(document_id, page_number, image) VALUES (?, ?, ?)",
-            (doc_id, 1, b"img"),
+            (doc_id, 1, b"fake"),
         )
         conn.commit()
         return doc_id
